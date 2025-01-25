@@ -33,7 +33,8 @@ const int coolRelay2Pin = 26;
 const int fanRelayPin = 25;
 
 // Settings
-float setTemp = 72.0; // Default set temperature in Fahrenheit
+float setTempHeat = 72.0; // Default set temperature for heating in Fahrenheit
+float setTempCool = 76.0; // Default set temperature for cooling in Fahrenheit
 float tempSwing = 1.0;
 bool autoChangeover = false;
 bool fanRelayNeeded = false;
@@ -49,6 +50,7 @@ unsigned long fanRunDuration = 0;                                               
 String homeAssistantUrl = "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"; // Replace with your Home Assistant URL
 String homeAssistantApiKey = "your_api_key";                                                                // Home Assistant API Key
 unsigned long lastInteractionTime = 0;                                                          // Last interaction time
+const float tempDifferential = 4.0; // Fixed differential between heat and cool for auto changeover
 
 // MQTT settings
 String mqttServer = "192.168.183.238"; // Replace with your MQTT server
@@ -234,6 +236,8 @@ void setupWiFi()
 {
     wifiSSID = preferences.getString("wifiSSID", "");
     wifiPassword = preferences.getString("wifiPassword", "");
+
+    WiFi.setHostname("ESP32-Simple-Thermostat"); // Set the WiFi device name
 
     if (wifiSSID != "" && wifiPassword != "")
     {
@@ -468,13 +472,27 @@ void handleButtonPress(uint16_t x, uint16_t y)
 {
     if (x > 270 && x < 310 && y > 200 && y < 240)
     {
-        setTemp += 1.0;
+        if (thermostatMode == "heat" || thermostatMode == "auto")
+        {
+            setTempHeat += 1.0;
+        }
+        else if (thermostatMode == "cool")
+        {
+            setTempCool += 1.0;
+        }
         saveSettings();
         updateDisplay(currentTemp, currentHumidity);
     }
     else if (x > 50 && x < 90 && y > 200 && y < 240)
     {
-        setTemp -= 1.0;
+        if (thermostatMode == "heat" || thermostatMode == "auto")
+        {
+            setTempHeat -= 1.0;
+        }
+        else if (thermostatMode == "cool")
+        {
+            setTempCool -= 1.0;
+        }
         saveSettings();
         updateDisplay(currentTemp, currentHumidity);
     }
@@ -547,18 +565,59 @@ void controlRelays(float currentTemp)
     }
     else if (autoChangeover)
     {
-        // Implement auto changeover logic
+        // Auto changeover logic
+        if (currentTemp < setTempHeat - tempSwing)
+        {
+            digitalWrite(heatRelay1Pin, HIGH); // First stage heat
+            heatingOn = true;
+            coolingOn = false;
+            if (fanRelayNeeded)
+                digitalWrite(fanRelayPin, HIGH);
+            if (currentTemp < setTempHeat - tempSwing - 1.0)
+            {
+                digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
+            }
+            else
+            {
+                digitalWrite(heatRelay2Pin, LOW);
+            }
+        }
+        else if (currentTemp > setTempCool + tempSwing)
+        {
+            digitalWrite(coolRelay1Pin, HIGH); // First stage cool
+            coolingOn = true;
+            heatingOn = false;
+            if (fanRelayNeeded)
+                digitalWrite(fanRelayPin, HIGH);
+            if (currentTemp > setTempCool + tempSwing + 1.0)
+            {
+                digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
+            }
+            else
+            {
+                digitalWrite(coolRelay2Pin, LOW);
+            }
+        }
+        else
+        {
+            digitalWrite(heatRelay1Pin, LOW);
+            digitalWrite(heatRelay2Pin, LOW);
+            digitalWrite(coolRelay1Pin, LOW);
+            digitalWrite(coolRelay2Pin, LOW);
+            heatingOn = false;
+            coolingOn = false;
+        }
     }
     else
     {
         // Heating logic
-        if (currentTemp < setTemp - tempSwing)
+        if (currentTemp < setTempHeat - tempSwing)
         {
             digitalWrite(heatRelay1Pin, HIGH); // First stage heat
             heatingOn = true;
             if (fanRelayNeeded)
                 digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp < setTemp - tempSwing - 1.0)
+            if (currentTemp < setTempHeat - tempSwing - 1.0)
             {
                 digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
             }
@@ -575,13 +634,13 @@ void controlRelays(float currentTemp)
         }
 
         // Cooling logic
-        if (currentTemp > setTemp + tempSwing)
+        if (currentTemp > setTempCool + tempSwing)
         {
             digitalWrite(coolRelay1Pin, HIGH); // First stage cool
             coolingOn = true;
             if (fanRelayNeeded)
                 digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp > setTemp + tempSwing + 1.0)
+            if (currentTemp > setTempCool + tempSwing + 1.0)
             {
                 digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
             }
@@ -668,7 +727,8 @@ void handleWebRequests()
         String html = "<html><body>";
         html += "<h1>Thermostat Settings</h1>";
         html += "<form action='/set' method='POST'>";
-        html += "Set Temp: <input type='text' name='setTemp' value='" + String(setTemp) + "'><br>";
+        html += "Set Temp Heat: <input type='text' name='setTempHeat' value='" + String(setTempHeat) + "'><br>";
+        html += "Set Temp Cool: <input type='text' name='setTempCool' value='" + String(setTempCool) + "'><br>";
         html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
         html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
@@ -715,8 +775,11 @@ void handleWebRequests()
 
     server.on("/set", HTTP_POST, [](AsyncWebServerRequest *request)
               {
-        if (request->hasParam("setTemp", true)) {
-            setTemp = request->getParam("setTemp", true)->value().toFloat();
+        if (request->hasParam("setTempHeat", true)) {
+            setTempHeat = request->getParam("setTempHeat", true)->value().toFloat();
+        }
+        if (request->hasParam("setTempCool", true)) {
+            setTempCool = request->getParam("setTempCool", true)->value().toFloat();
         }
         if (request->hasParam("tempSwing", true)) {
             tempSwing = request->getParam("tempSwing", true)->value().toFloat();
@@ -850,22 +913,31 @@ void updateDisplay(float currentTemp, float currentHumidity)
         previousHumidity = currentHumidity;
     }
 
-    // Update set temperature only if it has changed
-    if (setTemp != previousSetTemp)
+    // Update set temperature only if it has changed and mode is not "off"
+    if (thermostatMode != "off")
     {
-        // Clear only the area that needs to be updated
-        tft.fillRect(60, 100, 200, 40, TFT_BLACK); // Clear set temperature area
+        float currentSetTemp = (thermostatMode == "heat" || thermostatMode == "auto") ? setTempHeat : setTempCool;
+        if (currentSetTemp != previousSetTemp)
+        {
+            // Clear only the area that needs to be updated
+            tft.fillRect(60, 100, 200, 40, TFT_BLACK); // Clear set temperature area
 
-        // Display set temperature in the center of the display
-        tft.setTextSize(4);
-        tft.setCursor(60, 100);
-        char tempStr[6];
-        dtostrf(setTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
-        tft.print(tempStr);
-        tft.println(useFahrenheit ? " F" : " C");
+            // Display set temperature in the center of the display
+            tft.setTextSize(4);
+            tft.setCursor(60, 100);
+            char tempStr[6];
+            dtostrf(currentSetTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
+            tft.print(tempStr);
+            tft.println(useFahrenheit ? " F" : " C");
 
-        // Update previous value
-        previousSetTemp = setTemp;
+            // Update previous value
+            previousSetTemp = currentSetTemp;
+        }
+    }
+    else
+    {
+        // Clear the set temperature area if mode is "off"
+        tft.fillRect(60, 100, 200, 40, TFT_BLACK);
     }
 
     // Draw buttons at the bottom
@@ -874,23 +946,24 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
 void saveSettings()
 {
-    preferences.putFloat("setTemp", setTemp);
+    preferences.putFloat("setTempHeat", setTempHeat);
+    preferences.putFloat("setTempCool", setTempCool);
     preferences.putFloat("tempSwing", tempSwing);
     preferences.putBool("autoChangeover", autoChangeover);
     preferences.putBool("fanRelayNeeded", fanRelayNeeded);
     preferences.putBool("useFahrenheit", useFahrenheit);
     preferences.putBool("mqttEnabled", mqttEnabled);
-    preferences.putBool("homeAssistantEnabled", homeAssistantEnabled);
-    preferences.putInt("fanMinutesPerHour", fanMinutesPerHour);
+    preferences.putBool("haEnabled", homeAssistantEnabled); // Shortened key
+    preferences.putInt("fanMinPerHr", fanMinutesPerHour); // Shortened key
     preferences.putString("location", location);
-    preferences.putString("homeAssistantUrl", homeAssistantUrl); // Save homeAssistantUrl
-    preferences.putString("homeAssistantApiKey", homeAssistantApiKey);
-    preferences.putString("mqttServer", mqttServer); // Save mqttServer
-    preferences.putString("mqttUsername", mqttUsername); // Save mqttUsername
-    preferences.putString("mqttPassword", mqttPassword); // Save mqttPassword
-    preferences.putString("wifiSSID", wifiSSID); // Save wifiSSID
-    preferences.putString("wifiPassword", wifiPassword); // Save wifiPassword
-    preferences.putString("thermostatMode", thermostatMode);
+    preferences.putString("haUrl", homeAssistantUrl); // Shortened key
+    preferences.putString("haApiKey", homeAssistantApiKey); // Shortened key
+    preferences.putString("mqttServer", mqttServer);
+    preferences.putString("mqttUser", mqttUsername); // Shortened key
+    preferences.putString("mqttPass", mqttPassword); // Shortened key
+    preferences.putString("wifiSSID", wifiSSID);
+    preferences.putString("wifiPass", wifiPassword); // Shortened key
+    preferences.putString("thermoMode", thermostatMode); // Shortened key
     preferences.putString("fanMode", fanMode);
 
     saveWiFiSettings();
@@ -901,23 +974,24 @@ void saveSettings()
 
 void loadSettings()
 {
-    setTemp = preferences.getFloat("setTemp", 72.0);
+    setTempHeat = preferences.getFloat("setTempHeat", 72.0);
+    setTempCool = preferences.getFloat("setTempCool", 76.0);
     tempSwing = preferences.getFloat("tempSwing", 1.0);
     autoChangeover = preferences.getBool("autoChangeover", false);
     fanRelayNeeded = preferences.getBool("fanRelayNeeded", false);
     useFahrenheit = preferences.getBool("useFahrenheit", true);
     mqttEnabled = preferences.getBool("mqttEnabled", false);
-    homeAssistantEnabled = preferences.getBool("homeAssistantEnabled", false); // Default to false
-    fanMinutesPerHour = preferences.getInt("fanMinutesPerHour", 15);
+    homeAssistantEnabled = preferences.getBool("haEnabled", false); // Shortened key
+    fanMinutesPerHour = preferences.getInt("fanMinPerHr", 15); // Shortened key
     location = preferences.getString("location", "54762");
-    homeAssistantUrl = preferences.getString("homeAssistantUrl", "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"); // Load homeAssistantUrl
-    homeAssistantApiKey = preferences.getString("homeAssistantApiKey", "");
-    mqttServer = preferences.getString("mqttServer", "192.168.183.238"); // Load mqttServer
-    mqttUsername = preferences.getString("mqttUsername", "your_username"); // Load mqttUsername
-    mqttPassword = preferences.getString("mqttPassword", "your_password"); // Load mqttPassword
-    wifiSSID = preferences.getString("wifiSSID", ""); // Load wifiSSID
-    wifiPassword = preferences.getString("wifiPassword", ""); // Load wifiPassword
-    thermostatMode = preferences.getString("thermostatMode", "off");
+    homeAssistantUrl = preferences.getString("haUrl", "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"); // Shortened key
+    homeAssistantApiKey = preferences.getString("haApiKey", ""); // Shortened key
+    mqttServer = preferences.getString("mqttServer", "192.168.183.238");
+    mqttUsername = preferences.getString("mqttUser", "your_username"); // Shortened key
+    mqttPassword = preferences.getString("mqttPass", "your_password"); // Shortened key
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPass", ""); // Shortened key
+    thermostatMode = preferences.getString("thermoMode", "off"); // Shortened key
     fanMode = preferences.getString("fanMode", "auto");
 
     // Debug print to confirm settings are loaded
@@ -1080,7 +1154,8 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
 
 void restoreDefaultSettings()
 {
-    setTemp = 72.0;
+    setTempHeat = 72.0;
+    setTempCool = 76.0;
     tempSwing = 1.0;
     autoChangeover = false;
     fanRelayNeeded = false;
