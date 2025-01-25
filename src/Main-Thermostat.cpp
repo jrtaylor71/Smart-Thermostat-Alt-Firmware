@@ -1,6 +1,6 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
-#include <EEPROM.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <Adafruit_AHTX0.h>
 #include <TFT_eSPI.h>
@@ -21,6 +21,7 @@ AsyncWebServer server(80);
 TFT_eSPI tft = TFT_eSPI();
 WiFiClient espClient;
 PubSubClient mqttClient(espClient); // Initialize the MQTT client
+Preferences preferences; // Preferences instance
 String inputText = "";
 bool isEnteringSSID = true;
 
@@ -61,21 +62,6 @@ bool fanOn = false;
 String thermostatMode = "auto"; // Default thermostat mode
 String fanMode = "auto"; // Default fan mode
 
-// EEPROM addresses
-const int EEPROM_SIZE = 512;
-const int ADDR_SET_TEMP = 0;
-const int ADDR_TEMP_SWING = ADDR_SET_TEMP + sizeof(float);
-const int ADDR_AUTO_CHANGEOVER = ADDR_TEMP_SWING + sizeof(float);
-const int ADDR_FAN_RELAY_NEEDED = ADDR_AUTO_CHANGEOVER + sizeof(bool);
-const int ADDR_USE_FAHRENHEIT = ADDR_FAN_RELAY_NEEDED + sizeof(bool);
-const int ADDR_MQTT_ENABLED = ADDR_USE_FAHRENHEIT + sizeof(bool);
-const int ADDR_LOCATION = ADDR_MQTT_ENABLED + sizeof(bool);
-const int ADDR_FAN_MINUTES_PER_HOUR = ADDR_LOCATION + 10; // Assuming location is max 10 chars
-const int ADDR_HOME_ASSISTANT_API_KEY = ADDR_FAN_MINUTES_PER_HOUR + sizeof(int);
-const int ADDR_SCREEN_BLANK_TIME = ADDR_HOME_ASSISTANT_API_KEY + 32; // Assuming API key is max 32 chars
-const int ADDR_WIFI_SSID = ADDR_SCREEN_BLANK_TIME + sizeof(int);
-const int ADDR_WIFI_PASSWORD = ADDR_WIFI_SSID + 32; // Assuming SSID is max 32 chars
-
 // Function prototypes
 void setupWiFi();
 void controlRelays(float currentTemp);
@@ -108,8 +94,8 @@ void setup()
 {
     Serial.begin(115200);
 
-    // Initialize EEPROM
-    EEPROM.begin(EEPROM_SIZE);
+    // Initialize Preferences
+    preferences.begin("thermostat", false);
     loadSettings();
 
     // Initialize the AHT20 sensor
@@ -183,7 +169,7 @@ void loop()
     static unsigned long lastWiFiAttemptTime = 0;
     static unsigned long lastMQTTAttemptTime = 0;
     static unsigned long lastDisplayUpdateTime = 0;
-    const unsigned long displayUpdateInterval = 1000; // Update display every second
+    const unsigned long displayUpdateInterval = 10; // Update display every 
 
     // Feed the watchdog timer
     esp_task_wdt_reset();
@@ -272,22 +258,8 @@ void loop()
 
 void setupWiFi()
 {
-    char ssidBuffer[33];
-    char passwordBuffer[65];
-
-    for (int i = 0; i < 32; i++)
-    {
-        ssidBuffer[i] = EEPROM.read(ADDR_WIFI_SSID + i);
-    }
-    ssidBuffer[32] = '\0';
-    wifiSSID = String(ssidBuffer);
-
-    for (int i = 0; i < 64; i++)
-    {
-        passwordBuffer[i] = EEPROM.read(ADDR_WIFI_PASSWORD + i);
-    }
-    passwordBuffer[64] = '\0';
-    wifiPassword = String(passwordBuffer);
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
 
     if (wifiSSID != "" && wifiPassword != "")
     {
@@ -788,26 +760,30 @@ void handleWebRequests()
 void updateDisplay(float currentTemp, float currentHumidity)
 {
     // Clear only the areas that need to be updated
-    tft.fillRect(0, 0, 320, 60, TFT_BLACK); // Clear the area for temperature and humidity
-    tft.fillRect(0, 80, 320, 40, TFT_BLACK); // Clear the area for set temperature
+    tft.fillRect(0, 0, 320, 240, TFT_BLACK); // Clear the entire display
 
-    // Display temperature and humidity
-    tft.setTextSize(3);
-    tft.setCursor(0, 0);
-    tft.print("Temp: ");
-    tft.print(currentTemp);
-    tft.println(useFahrenheit ? " F" : " C");
+    // Display temperature and humidity on the right side vertically
+    tft.setTextSize(2); // Adjust text size to fit the display
+    tft.setRotation(1); // Set rotation for vertical display
+    tft.setCursor(240, 20); // Adjust cursor position for temperature
+    char tempStr[6];
+    dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
+    tft.print(tempStr);
+    tft.println(useFahrenheit ? "F" : "C");
 
-    tft.setCursor(0, 40);
-    tft.print("Humidity: ");
-    tft.print(currentHumidity);
-    tft.println(" %");
+    tft.setCursor(240, 60); // Adjust cursor position for humidity
+    char humidityStr[6];
+    dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
+    tft.print(humidityStr);
+    tft.println("%");
 
-    // Display set temperature and other settings
-    tft.setTextSize(2);
-    tft.setCursor(0, 80);
-    tft.print("Set Temp: ");
-    tft.print(setTemp);
+    tft.setRotation(1); // Reset rotation for horizontal display
+
+    // Display set temperature in the center of the display
+    tft.setTextSize(4);
+    tft.setCursor(60, 100);
+    dtostrf(setTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
+    tft.print(tempStr);
     tft.println(useFahrenheit ? " F" : " C");
 
     // Draw buttons at the bottom
@@ -816,99 +792,39 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
 void saveSettings()
 {
-    EEPROM.put(ADDR_SET_TEMP, setTemp);
-    EEPROM.put(ADDR_TEMP_SWING, tempSwing);
-    EEPROM.put(ADDR_AUTO_CHANGEOVER, autoChangeover);
-    EEPROM.put(ADDR_FAN_RELAY_NEEDED, fanRelayNeeded);
-    EEPROM.put(ADDR_USE_FAHRENHEIT, useFahrenheit);
-    EEPROM.put(ADDR_MQTT_ENABLED, mqttEnabled);
-    EEPROM.put(ADDR_FAN_MINUTES_PER_HOUR, fanMinutesPerHour);
-    EEPROM.put(ADDR_SCREEN_BLANK_TIME, screenBlankTime);
-
-    for (int i = 0; i < 10; i++)
-    {
-        EEPROM.write(ADDR_LOCATION + i, i < location.length() ? location[i] : 0);
-    }
-
-    for (int i = 0; i < 32; i++)
-    {
-        EEPROM.write(ADDR_HOME_ASSISTANT_API_KEY + i, i < homeAssistantApiKey.length() ? homeAssistantApiKey[i] : 0);
-    }
-
-    // Save thermostat and fan modes
-    EEPROM.write(ADDR_FAN_MINUTES_PER_HOUR + sizeof(int) + 32, thermostatMode == "auto" ? 0 : (thermostatMode == "heat" ? 1 : 2));
-    EEPROM.write(ADDR_FAN_MINUTES_PER_HOUR + sizeof(int) + 33, fanMode == "auto" ? 0 : (fanMode == "on" ? 1 : 2));
+    preferences.putFloat("setTemp", setTemp);
+    preferences.putFloat("tempSwing", tempSwing);
+    preferences.putBool("autoChangeover", autoChangeover);
+    preferences.putBool("fanRelayNeeded", fanRelayNeeded);
+    preferences.putBool("useFahrenheit", useFahrenheit);
+    preferences.putBool("mqttEnabled", mqttEnabled);
+    preferences.putInt("fanMinutesPerHour", fanMinutesPerHour);
+    preferences.putInt("screenBlankTime", screenBlankTime);
+    preferences.putString("location", location);
+    preferences.putString("homeAssistantApiKey", homeAssistantApiKey);
+    preferences.putString("thermostatMode", thermostatMode);
+    preferences.putString("fanMode", fanMode);
 
     saveWiFiSettings();
-    EEPROM.commit();
 }
 
 void loadSettings()
 {
-    if (EEPROM.read(ADDR_SET_TEMP) == 0xFF) {
-        // EEPROM is not initialized, set default values
-        setTemp = 72.0;
-        tempSwing = 1.0;
-        autoChangeover = false;
-        fanRelayNeeded = true;
-        useFahrenheit = true;
-        mqttEnabled = false;
-        location = "54762";
-        fanMinutesPerHour = 15;
-        homeAssistantApiKey = "";
-        screenBlankTime = 120;
-        thermostatMode = "auto";
-        fanMode = "auto";
+    setTemp = preferences.getFloat("setTemp", 72.0);
+    tempSwing = preferences.getFloat("tempSwing", 1.0);
+    autoChangeover = preferences.getBool("autoChangeover", false);
+    fanRelayNeeded = preferences.getBool("fanRelayNeeded", true);
+    useFahrenheit = preferences.getBool("useFahrenheit", true);
+    mqttEnabled = preferences.getBool("mqttEnabled", false);
+    fanMinutesPerHour = preferences.getInt("fanMinutesPerHour", 15);
+    screenBlankTime = preferences.getInt("screenBlankTime", 120);
+    location = preferences.getString("location", "54762");
+    homeAssistantApiKey = preferences.getString("homeAssistantApiKey", "");
+    thermostatMode = preferences.getString("thermostatMode", "auto");
+    fanMode = preferences.getString("fanMode", "auto");
 
-        saveSettings();
-    } else {
-        EEPROM.get(ADDR_SET_TEMP, setTemp);
-        EEPROM.get(ADDR_TEMP_SWING, tempSwing);
-        EEPROM.get(ADDR_AUTO_CHANGEOVER, autoChangeover);
-        EEPROM.get(ADDR_FAN_RELAY_NEEDED, fanRelayNeeded);
-        EEPROM.get(ADDR_USE_FAHRENHEIT, useFahrenheit);
-        EEPROM.get(ADDR_MQTT_ENABLED, mqttEnabled);
-        EEPROM.get(ADDR_FAN_MINUTES_PER_HOUR, fanMinutesPerHour);
-        EEPROM.get(ADDR_SCREEN_BLANK_TIME, screenBlankTime);
-
-        char locBuffer[11];
-        for (int i = 0; i < 10; i++)
-        {
-            locBuffer[i] = EEPROM.read(ADDR_LOCATION + i);
-        }
-        locBuffer[10] = '\0';
-        location = String(locBuffer);
-
-        char apiKeyBuffer[33];
-        for (int i = 0; i < 32; i++)
-        {
-            apiKeyBuffer[i] = EEPROM.read(ADDR_HOME_ASSISTANT_API_KEY + i);
-        }
-        apiKeyBuffer[32] = '\0';
-        homeAssistantApiKey = String(apiKeyBuffer);
-
-        char ssidBuffer[33];
-        for (int i = 0; i < 32; i++)
-        {
-            ssidBuffer[i] = EEPROM.read(ADDR_WIFI_SSID + i);
-        }
-        ssidBuffer[32] = '\0';
-        wifiSSID = String(ssidBuffer);
-
-        char passwordBuffer[65];
-        for (int i = 0; i < 64; i++)
-        {
-            passwordBuffer[i] = EEPROM.read(ADDR_WIFI_PASSWORD + i);
-        }
-        passwordBuffer[64] = '\0';
-        wifiPassword = String(passwordBuffer);
-
-        // Load thermostat and fan modes
-        int mode = EEPROM.read(ADDR_FAN_MINUTES_PER_HOUR + sizeof(int) + 32);
-        thermostatMode = mode == 0 ? "auto" : (mode == 1 ? "heat" : "cool");
-        mode = EEPROM.read(ADDR_FAN_MINUTES_PER_HOUR + sizeof(int) + 33);
-        fanMode = mode == 0 ? "auto" : (mode == 1 ? "on" : "off");
-    }
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
 }
 
 void sendDataToHomeAssistant(float temperature, float humidity)
@@ -946,17 +862,8 @@ float convertCtoF(float celsius)
 
 void saveWiFiSettings()
 {
-    for (int i = 0; i < 32; i++)
-    {
-        EEPROM.write(ADDR_WIFI_SSID + i, i < wifiSSID.length() ? wifiSSID[i] : 0);
-    }
-
-    for (int i = 0; i < 64; i++)
-    {
-        EEPROM.write(ADDR_WIFI_PASSWORD + i, i < wifiPassword.length() ? wifiPassword[i] : 0);
-    }
-
-    EEPROM.commit();
+    preferences.putString("wifiSSID", wifiSSID);
+    preferences.putString("wifiPassword", wifiPassword);
 }
 
 void connectToWiFi()
@@ -1005,20 +912,17 @@ void calibrateTouchScreen()
     uint16_t calData[5];
     uint8_t calDataOK = 0;
 
-    // Check if calibration data is stored in EEPROM
-    if (EEPROM.read(0) == 0x55)
+    // Check if calibration data is stored in Preferences
+    if (preferences.getBytesLength("calData") == sizeof(calData))
     {
-        for (uint8_t i = 0; i < 5; i++)
-        {
-            calData[i] = EEPROM.read(1 + i * 2) << 8 | EEPROM.read(2 + i * 2);
-        }
+        preferences.getBytes("calData", calData, sizeof(calData));
         tft.setTouch(calData);
         calDataOK = 1;
     }
 
     if (calDataOK && tft.getTouchRaw(&calData[0], &calData[1]))
     {
-        Serial.println("Touch screen calibration data loaded from EEPROM");
+        Serial.println("Touch screen calibration data loaded from Preferences");
     }
     else
     {
@@ -1035,14 +939,8 @@ void calibrateTouchScreen()
 
         tft.calibrateTouch(calData, TFT_WHITE, TFT_RED, 15);
 
-        // Store calibration data in EEPROM
-        EEPROM.write(0, 0x55);
-        for (uint8_t i = 0; i < 5; i++)
-        {
-            EEPROM.write(1 + i * 2, calData[i] >> 8);
-            EEPROM.write(2 + i * 2, calData[i] & 0xFF);
-        }
-        EEPROM.commit();
+        // Store calibration data in Preferences
+        preferences.putBytes("calData", calData, sizeof(calData));
     }
 }
 
