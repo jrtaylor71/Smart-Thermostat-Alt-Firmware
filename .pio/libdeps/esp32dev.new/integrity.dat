@@ -1,0 +1,9 @@
+Preferences
+PubSubClient
+WiFi
+EEPROM
+Adafruit AHTX0
+TFT_eSPI
+ESP Async WebServer
+Wire
+HTTPClient
