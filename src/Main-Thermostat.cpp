@@ -47,8 +47,7 @@ int fanMinutesPerHour = 15;                                                     
 unsigned long lastFanRunTime = 0;                                                               // Time when the fan last ran
 unsigned long fanRunDuration = 0;                                                               // Duration for which the fan has run in the current hour
 String homeAssistantUrl = "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"; // Replace with your Home Assistant URL
-String homeAssistantApiKey = "";                                                                // Home Assistant API Key
-int screenBlankTime = 120;                                                                      // Default screen blank time in seconds
+String homeAssistantApiKey = "your_api_key";                                                                // Home Assistant API Key
 unsigned long lastInteractionTime = 0;                                                          // Last interaction time
 
 // MQTT settings
@@ -84,6 +83,7 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard);
 void connectToWiFi();
 void enterWiFiCredentials();
 void calibrateTouchScreen();
+void restoreDefaultSettings();
 
 uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibration data
 
@@ -177,9 +177,7 @@ void loop()
         connectToWiFi();
         lastWiFiAttemptTime = millis();
     }
-
-    // Comment out MQTT-related code
-    /*
+    
     if (mqttEnabled)
     {
         // Attempt to reconnect to MQTT if not connected and WiFi is connected
@@ -190,7 +188,6 @@ void loop()
         }
         mqttClient.loop();
     }
-    */
 
     // Read sensor data if sensor is available
     currentTemp = dht.readTemperature(useFahrenheit);
@@ -674,19 +671,47 @@ void handleWebRequests()
         html += "Set Temp: <input type='text' name='setTemp' value='" + String(setTemp) + "'><br>";
         html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
-        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>"; // Ensure fanRelayNeeded is displayed correctly
+        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
         html += "Use Fahrenheit: <input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + "><br>";
         html += "MQTT Enabled: <input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + "><br>";
         html += "Home Assistant Enabled: <input type='checkbox' name='homeAssistantEnabled' " + String(homeAssistantEnabled ? "checked" : "") + "><br>";
         html += "Fan Minutes Per Hour: <input type='text' name='fanMinutesPerHour' value='" + String(fanMinutesPerHour) + "'><br>";
         html += "Location (ZIP): <input type='text' name='location' value='" + location + "'><br>";
+        html += "Home Assistant URL: <input type='text' name='homeAssistantUrl' value='" + homeAssistantUrl + "'><br>";
         html += "Home Assistant API Key: <input type='text' name='homeAssistantApiKey' value='" + homeAssistantApiKey + "'><br>";
-        html += "Screen Blank Time (seconds): <input type='text' name='screenBlankTime' value='" + String(screenBlankTime) + "'><br>";
+        html += "MQTT Server: <input type='text' name='mqttServer' value='" + mqttServer + "'><br>";
+        html += "MQTT Username: <input type='text' name='mqttUsername' value='" + mqttUsername + "'><br>";
+        html += "MQTT Password: <input type='text' name='mqttPassword' value='" + mqttPassword + "'><br>";
+        html += "WiFi SSID: <input type='text' name='wifiSSID' value='" + wifiSSID + "'><br>";
+        html += "WiFi Password: <input type='text' name='wifiPassword' value='" + wifiPassword + "'><br>";
         html += "<input type='submit' value='Save Settings'>";
+        html += "</form>";
+        html += "<form action='/confirm_restore' method='GET'>";
+        html += "<input type='submit' value='Restore Defaults'>";
         html += "</form>";
         html += "</body></html>";
 
         request->send(200, "text/html", html); });
+
+    server.on("/confirm_restore", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        String html = "<html><body>";
+        html += "<h1>Confirm Restore Defaults</h1>";
+        html += "<p>Are you sure you want to restore default settings? This will overwrite your current settings.</p>";
+        html += "<form action='/restore_defaults' method='POST'>";
+        html += "<input type='submit' value='Yes, Restore Defaults'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'>";
+        html += "<input type='submit' value='Cancel'>";
+        html += "</form>";
+        html += "</body></html>";
+
+        request->send(200, "text/html", html); });
+
+    server.on("/restore_defaults", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        restoreDefaultSettings();
+        request->send(200, "text/plain", "Default settings restored! Please go back to the previous page."); });
 
     server.on("/set", HTTP_POST, [](AsyncWebServerRequest *request)
               {
@@ -700,7 +725,7 @@ void handleWebRequests()
             autoChangeover = request->getParam("autoChangeover", true)->value() == "on";
         }
         if (request->hasParam("fanRelayNeeded", true)) {
-            fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on"; // Ensure fanRelayNeeded is updated correctly
+            fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on";
         } else {
             fanRelayNeeded = false; // Ensure fanRelayNeeded is set to false if not present in the form
         }
@@ -719,11 +744,29 @@ void handleWebRequests()
         if (request->hasParam("location", true)) {
             location = request->getParam("location", true)->value();
         }
+        if (request->hasParam("homeAssistantUrl", true)) {
+            homeAssistantUrl = request->getParam("homeAssistantUrl", true)->value(); // Ensure homeAssistantUrl is updated correctly
+        }
         if (request->hasParam("homeAssistantApiKey", true)) {
             homeAssistantApiKey = request->getParam("homeAssistantApiKey", true)->value();
         }
-        if (request->hasParam("screenBlankTime", true)) {
-            screenBlankTime = request->getParam("screenBlankTime", true)->value().toInt();
+        if (request->hasParam("mqttServer", true)) {
+            mqttServer = request->getParam("mqttServer", true)->value(); // Ensure mqttServer is updated correctly
+        }
+        if (request->hasParam("mqttUsername", true)) {
+            mqttUsername = request->getParam("mqttUsername", true)->value(); // Ensure mqttUsername is updated correctly
+        }
+        if (request->hasParam("mqttPassword", true)) {
+            mqttPassword = request->getParam("mqttPassword", true)->value(); // Ensure mqttPassword is updated correctly
+        }
+        if (request->hasParam("wifiSSID", true)) {
+            wifiSSID = request->getParam("wifiSSID", true)->value(); // Ensure wifiSSID is updated correctly
+        }
+        if (request->hasParam("wifiPassword", true)) {
+            String newWifiPassword = request->getParam("wifiPassword", true)->value();
+            if (!newWifiPassword.isEmpty()) {
+                wifiPassword = newWifiPassword; // Update wifiPassword only if a new one is provided
+            }
         }
 
         saveSettings();
@@ -839,9 +882,14 @@ void saveSettings()
     preferences.putBool("mqttEnabled", mqttEnabled);
     preferences.putBool("homeAssistantEnabled", homeAssistantEnabled);
     preferences.putInt("fanMinutesPerHour", fanMinutesPerHour);
-    preferences.putInt("screenBlankTime", screenBlankTime);
     preferences.putString("location", location);
+    preferences.putString("homeAssistantUrl", homeAssistantUrl); // Save homeAssistantUrl
     preferences.putString("homeAssistantApiKey", homeAssistantApiKey);
+    preferences.putString("mqttServer", mqttServer); // Save mqttServer
+    preferences.putString("mqttUsername", mqttUsername); // Save mqttUsername
+    preferences.putString("mqttPassword", mqttPassword); // Save mqttPassword
+    preferences.putString("wifiSSID", wifiSSID); // Save wifiSSID
+    preferences.putString("wifiPassword", wifiPassword); // Save wifiPassword
     preferences.putString("thermostatMode", thermostatMode);
     preferences.putString("fanMode", fanMode);
 
@@ -861,14 +909,16 @@ void loadSettings()
     mqttEnabled = preferences.getBool("mqttEnabled", false);
     homeAssistantEnabled = preferences.getBool("homeAssistantEnabled", false); // Default to false
     fanMinutesPerHour = preferences.getInt("fanMinutesPerHour", 15);
-    screenBlankTime = preferences.getInt("screenBlankTime", 120);
     location = preferences.getString("location", "54762");
+    homeAssistantUrl = preferences.getString("homeAssistantUrl", "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"); // Load homeAssistantUrl
     homeAssistantApiKey = preferences.getString("homeAssistantApiKey", "");
+    mqttServer = preferences.getString("mqttServer", "192.168.183.238"); // Load mqttServer
+    mqttUsername = preferences.getString("mqttUsername", "your_username"); // Load mqttUsername
+    mqttPassword = preferences.getString("mqttPassword", "your_password"); // Load mqttPassword
+    wifiSSID = preferences.getString("wifiSSID", ""); // Load wifiSSID
+    wifiPassword = preferences.getString("wifiPassword", ""); // Load wifiPassword
     thermostatMode = preferences.getString("thermostatMode", "off");
     fanMode = preferences.getString("fanMode", "auto");
-
-    wifiSSID = preferences.getString("wifiSSID", "");
-    wifiPassword = preferences.getString("wifiPassword", "");
 
     // Debug print to confirm settings are loaded
     Serial.println("Settings loaded.");
@@ -1026,4 +1076,28 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
             }
         }
     }
+}
+
+void restoreDefaultSettings()
+{
+    setTemp = 72.0;
+    tempSwing = 1.0;
+    autoChangeover = false;
+    fanRelayNeeded = false;
+    useFahrenheit = true;
+    mqttEnabled = false;
+    homeAssistantEnabled = false;
+    location = "00000";
+    wifiSSID = "";
+    wifiPassword = "";
+    fanMinutesPerHour = 15;
+    homeAssistantUrl = "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat";
+    homeAssistantApiKey = "";
+    mqttServer = "0.0.0.0";
+    mqttUsername = "your_username";
+    mqttPassword = "your_password";
+    thermostatMode = "off";
+    fanMode = "auto";
+
+    saveSettings();
 }
