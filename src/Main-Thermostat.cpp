@@ -2,7 +2,7 @@
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <Wire.h>
-#include <Adafruit_AHTX0.h>
+#include <DHT.h>
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h> // Include the MQTT library
@@ -12,11 +12,11 @@
 // Constants
 const int SECONDS_PER_HOUR = 3600;
 const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
+#define DHTPIN 22 // Define the pin where the DHT11 is connected
+#define DHTTYPE DHT11 // Define the type of DHT sensor
 
 // Globals
-Adafruit_AHTX0 aht;
-Adafruit_Sensor *ahtTempSensor = nullptr;
-Adafruit_Sensor *ahtHumiditySensor = nullptr;
+DHT dht(DHTPIN, DHTTYPE);
 AsyncWebServer server(80);
 TFT_eSPI tft = TFT_eSPI();
 WiFiClient espClient;
@@ -30,15 +30,16 @@ const int heatRelay1Pin = 13;
 const int heatRelay2Pin = 12;
 const int coolRelay1Pin = 14;
 const int coolRelay2Pin = 26;
-const int fanRelayPin = 27;
+const int fanRelayPin = 25;
 
 // Settings
 float setTemp = 72.0; // Default set temperature in Fahrenheit
 float tempSwing = 1.0;
 bool autoChangeover = false;
-bool fanRelayNeeded = true;
+bool fanRelayNeeded = false;
 bool useFahrenheit = true; // Default to Fahrenheit
 bool mqttEnabled = false; // Default to MQTT disabled
+bool homeAssistantEnabled = false; // Default to Home Assistant enabled
 String location = "54762"; // Default ZIP code
 String wifiSSID = "";
 String wifiPassword = "";
@@ -59,7 +60,7 @@ String mqttPassword = "your_password";  // Replace with your MQTT password
 bool heatingOn = false;
 bool coolingOn = false;
 bool fanOn = false;
-String thermostatMode = "auto"; // Default thermostat mode
+String thermostatMode = "off"; // Default thermostat mode
 String fanMode = "auto"; // Default fan mode
 
 // Function prototypes
@@ -89,6 +90,10 @@ uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibratio
 float currentTemp = 0.0;
 float currentHumidity = 0.0;
 bool isUpperCaseKeyboard = true;
+float previousTemp = 0.0;
+float previousHumidity = 0.0;
+float previousSetTemp = 0.0;
+bool firstHourAfterBoot = true; // Flag to track the first hour after bootup
 
 void setup()
 {
@@ -98,20 +103,12 @@ void setup()
     preferences.begin("thermostat", false);
     loadSettings();
 
-    // Initialize the AHT20 sensor
-    Wire.begin();
-    if (!aht.begin())
-    {
-        Serial.println("Could not find AHT? Check wiring");
-        ahtTempSensor = nullptr;
-        ahtHumiditySensor = nullptr;
-    }
-    else
-    {
-        // Get references to the temperature and humidity sensors
-        ahtTempSensor = aht.getTemperatureSensor();
-        ahtHumiditySensor = aht.getHumiditySensor();
-    }
+    // Debug print to check if homeAssistantEnabled is loaded correctly
+    // Serial.print("Home Assistant Enabled: ");
+    // Serial.println(homeAssistantEnabled);
+
+    // Initialize the DHT11 sensor
+    dht.begin();
 
     // Initialize the TFT display
     tft.init();
@@ -132,7 +129,7 @@ void setup()
     pinMode(coolRelay2Pin, OUTPUT);
     pinMode(fanRelayPin, OUTPUT);
 
-    // Turn off all relays initially
+    // Ensure all relays are off during bootup
     digitalWrite(heatRelay1Pin, LOW);
     digitalWrite(heatRelay2Pin, LOW);
     digitalWrite(coolRelay1Pin, LOW);
@@ -169,7 +166,7 @@ void loop()
     static unsigned long lastWiFiAttemptTime = 0;
     static unsigned long lastMQTTAttemptTime = 0;
     static unsigned long lastDisplayUpdateTime = 0;
-    const unsigned long displayUpdateInterval = 10; // Update display every 
+    const unsigned long displayUpdateInterval = 1000; // Update display every 
 
     // Feed the watchdog timer
     esp_task_wdt_reset();
@@ -196,51 +193,31 @@ void loop()
     */
 
     // Read sensor data if sensor is available
-    if (ahtTempSensor && ahtHumiditySensor)
+    currentTemp = dht.readTemperature(useFahrenheit);
+    currentHumidity = dht.readHumidity();
+
+    if (!isnan(currentTemp) && !isnan(currentHumidity))
     {
-        sensors_event_t tempEvent, humidityEvent;
-        if (ahtTempSensor->getEvent(&tempEvent) && ahtHumiditySensor->getEvent(&humidityEvent))
-        {
-            // Convert temperature to Fahrenheit if needed
-            currentTemp = useFahrenheit ? convertCtoF(tempEvent.temperature) : tempEvent.temperature;
-            currentHumidity = humidityEvent.relative_humidity;
+        // Control relays based on current temperature
+        controlRelays(currentTemp);
 
-            // Control relays based on current temperature
-            controlRelays(currentTemp);
-
-            // Send data to Home Assistant
-            sendDataToHomeAssistant(currentTemp, currentHumidity);
-        }
+        // Send data to Home Assistant
+        sendDataToHomeAssistant(currentTemp, currentHumidity);
     }
 
     // Control fan based on schedule
     controlFanSchedule();
 
-    // Handle screen blanking
-    if (millis() - lastInteractionTime > screenBlankTime * 1000)
-    {
-        tft.fillScreen(TFT_BLACK);
-    }
-
     // Handle button presses
     uint16_t x, y;
     if (tft.getTouch(&x, &y))
     {
-        // Wake up the screen if it is blanked
-        if (millis() - lastInteractionTime > screenBlankTime * 1000)
-        {
-            lastInteractionTime = millis();
-            updateDisplay(currentTemp, currentHumidity);
-        }
-        else
-        {
-            Serial.print("Touch detected at: ");
-            Serial.print(x);
-            Serial.print(", ");
-            Serial.println(y);
-            handleButtonPress(x, y);
-            handleKeyboardTouch(x, y, isUpperCaseKeyboard);
-        }
+        Serial.print("Touch detected at: ");
+        Serial.print(x);
+        Serial.print(", ");
+        Serial.println(y);
+        handleButtonPress(x, y);
+        handleKeyboardTouch(x, y, isUpperCaseKeyboard);
     }
 
     // Update display periodically
@@ -253,7 +230,7 @@ void loop()
     // Control relays based on current temperature
     controlRelays(currentTemp);
 
-    delay(1000); // Adjust delay as needed
+    // delay(50); // Adjust delay as needed
 }
 
 void setupWiFi()
@@ -476,6 +453,18 @@ void drawButtons()
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
     tft.print(fanMode);
+
+    // Add the word "FAN" above the fan mode button
+    tft.setCursor(210, 180); // Adjusted y-coordinate to move the text up
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("FAN");
+
+    // Add the word "MODE" above the mode button
+    tft.setCursor(140, 180); // Adjusted y-coordinate to move the text up
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("MODE");
 }
 
 void handleButtonPress(uint16_t x, uint16_t y)
@@ -499,6 +488,8 @@ void handleButtonPress(uint16_t x, uint16_t y)
             thermostatMode = "heat";
         else if (thermostatMode == "heat")
             thermostatMode = "cool";
+        else if (thermostatMode == "cool")
+            thermostatMode = "off";
         else
             thermostatMode = "auto";
 
@@ -510,8 +501,6 @@ void handleButtonPress(uint16_t x, uint16_t y)
         // Change fan mode
         if (fanMode == "auto")
             fanMode = "on";
-        else if (fanMode == "on")
-            fanMode = "off";
         else
             fanMode = "auto";
 
@@ -547,7 +536,19 @@ void reconnectMQTT()
 
 void controlRelays(float currentTemp)
 {
-    if (autoChangeover)
+    if (thermostatMode == "off")
+    {
+        // Turn off all relays
+        digitalWrite(heatRelay1Pin, LOW);
+        digitalWrite(heatRelay2Pin, LOW);
+        digitalWrite(coolRelay1Pin, LOW);
+        digitalWrite(coolRelay2Pin, LOW);
+        digitalWrite(fanRelayPin, LOW);
+        heatingOn = false;
+        coolingOn = false;
+        fanOn = false;
+    }
+    else if (autoChangeover)
     {
         // Implement auto changeover logic
     }
@@ -601,48 +602,65 @@ void controlRelays(float currentTemp)
     }
 
     // Fan logic
-    if (fanRelayNeeded && digitalRead(heatRelay1Pin) == LOW && digitalRead(coolRelay1Pin) == LOW)
+    if (fanMode == "on")
     {
-        digitalWrite(fanRelayPin, LOW); // Turn off fan if not needed
-        fanOn = false;
-    }
-    else
-    {
+        digitalWrite(fanRelayPin, HIGH); // Turn on fan
         fanOn = true;
     }
+    else if (fanMode == "auto")
+    {
+        if (!heatingOn && !coolingOn)
+        {
+            digitalWrite(fanRelayPin, LOW); // Turn off fan if not needed
+            fanOn = false;
+        }
+    }    
 }
 
 void controlFanSchedule()
 {
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = (currentTime - lastFanRunTime) / 1000; // Convert to seconds
-
-    // Calculate the duration in seconds the fan should run per hour
-    unsigned long fanRunSecondsPerHour = fanMinutesPerHour * 60;
-
-    // If an hour has passed, reset the fan run duration
-    if (elapsedTime >= SECONDS_PER_HOUR)
+    if (firstHourAfterBoot)
     {
-        lastFanRunTime = currentTime;
-        fanRunDuration = 0;
+        unsigned long currentTime = millis();
+        if (currentTime >= SECONDS_PER_HOUR * 1000) // Check if an hour has passed
+        {
+            firstHourAfterBoot = false; // Reset the flag after the first hour
+        }
+        return; // Skip fan schedule during the first hour
     }
 
-    // Run the fan based on the schedule
-    if (fanRunDuration < fanRunSecondsPerHour)
+    if (fanMode == "auto")
     {
-        digitalWrite(fanRelayPin, HIGH);
-        fanOn = true;
-    }
-    else
-    {
-        digitalWrite(fanRelayPin, LOW);
-        fanOn = false;
-    }
+        unsigned long currentTime = millis();
+        unsigned long elapsedTime = (currentTime - lastFanRunTime) / 1000; // Convert to seconds
 
-    // Update the fan run duration
-    if (fanOn)
-    {
-        fanRunDuration += elapsedTime;
+        // Calculate the duration in seconds the fan should run per hour
+        unsigned long fanRunSecondsPerHour = fanMinutesPerHour * 60;
+
+        // If an hour has passed, reset the fan run duration
+        if (elapsedTime >= SECONDS_PER_HOUR)
+        {
+            lastFanRunTime = currentTime;
+            fanRunDuration = 0;
+        }
+
+        // Run the fan based on the schedule
+        if (fanRunDuration < fanRunSecondsPerHour)
+        {
+            digitalWrite(fanRelayPin, HIGH);
+            fanOn = true;
+        }
+        else
+        {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+        }
+
+        // Update the fan run duration
+        if (fanOn)
+        {
+            fanRunDuration += elapsedTime;
+        }
     }
 }
 
@@ -656,9 +674,10 @@ void handleWebRequests()
         html += "Set Temp: <input type='text' name='setTemp' value='" + String(setTemp) + "'><br>";
         html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
-        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
+        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>"; // Ensure fanRelayNeeded is displayed correctly
         html += "Use Fahrenheit: <input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + "><br>";
         html += "MQTT Enabled: <input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + "><br>";
+        html += "Home Assistant Enabled: <input type='checkbox' name='homeAssistantEnabled' " + String(homeAssistantEnabled ? "checked" : "") + "><br>";
         html += "Fan Minutes Per Hour: <input type='text' name='fanMinutesPerHour' value='" + String(fanMinutesPerHour) + "'><br>";
         html += "Location (ZIP): <input type='text' name='location' value='" + location + "'><br>";
         html += "Home Assistant API Key: <input type='text' name='homeAssistantApiKey' value='" + homeAssistantApiKey + "'><br>";
@@ -681,13 +700,18 @@ void handleWebRequests()
             autoChangeover = request->getParam("autoChangeover", true)->value() == "on";
         }
         if (request->hasParam("fanRelayNeeded", true)) {
-            fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on";
+            fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on"; // Ensure fanRelayNeeded is updated correctly
+        } else {
+            fanRelayNeeded = false; // Ensure fanRelayNeeded is set to false if not present in the form
         }
         if (request->hasParam("useFahrenheit", true)) {
             useFahrenheit = request->getParam("useFahrenheit", true)->value() == "on";
         }
         if (request->hasParam("mqttEnabled", true)) {
             mqttEnabled = request->getParam("mqttEnabled", true)->value() == "on";
+        }
+        if (request->hasParam("homeAssistantEnabled", true)) {
+            homeAssistantEnabled = request->getParam("homeAssistantEnabled", true)->value() == "on";
         }
         if (request->hasParam("fanMinutesPerHour", true)) {
             fanMinutesPerHour = request->getParam("fanMinutesPerHour", true)->value().toInt();
@@ -743,48 +767,63 @@ void handleWebRequests()
 
     server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        sensors_event_t tempEvent;
-        ahtTempSensor->getEvent(&tempEvent);
-        float currentTemp = useFahrenheit ? convertCtoF(tempEvent.temperature) : tempEvent.temperature;
+        float currentTemp = dht.readTemperature(useFahrenheit);
         String response = "{\"temperature\": \"" + String(currentTemp) + "\"}";
         request->send(200, "application/json", response); });
 
     server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        sensors_event_t humidityEvent;
-        ahtHumiditySensor->getEvent(&humidityEvent);
-        String response = "{\"humidity\": \"" + String(humidityEvent.relative_humidity) + "\"}";
+        float currentHumidity = dht.readHumidity();
+        String response = "{\"humidity\": \"" + String(currentHumidity) + "\"}";
         request->send(200, "application/json", response); });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
 {
-    // Clear only the areas that need to be updated
-    tft.fillRect(0, 0, 320, 240, TFT_BLACK); // Clear the entire display
+    // Update temperature and humidity only if they have changed
+    if (currentTemp != previousTemp || currentHumidity != previousHumidity)
+    {
+        // Clear only the areas that need to be updated
+        tft.fillRect(240, 20, 80, 40, TFT_BLACK); // Clear temperature area
+        tft.fillRect(240, 60, 80, 40, TFT_BLACK); // Clear humidity area
 
-    // Display temperature and humidity on the right side vertically
-    tft.setTextSize(2); // Adjust text size to fit the display
-    tft.setRotation(1); // Set rotation for vertical display
-    tft.setCursor(240, 20); // Adjust cursor position for temperature
-    char tempStr[6];
-    dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
-    tft.print(tempStr);
-    tft.println(useFahrenheit ? "F" : "C");
+        // Display temperature and humidity on the right side vertically
+        tft.setTextSize(2); // Adjust text size to fit the display
+        tft.setRotation(1); // Set rotation for vertical display
+        tft.setCursor(240, 20); // Adjust cursor position for temperature
+        char tempStr[6];
+        dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
+        tft.print(tempStr);
+        tft.println(useFahrenheit ? "F" : "C");
 
-    tft.setCursor(240, 60); // Adjust cursor position for humidity
-    char humidityStr[6];
-    dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
-    tft.print(humidityStr);
-    tft.println("%");
+        tft.setCursor(240, 60); // Adjust cursor position for humidity
+        char humidityStr[6];
+        dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
+        tft.print(humidityStr);
+        tft.println("%");
 
-    tft.setRotation(1); // Reset rotation for horizontal display
+        // Update previous values
+        previousTemp = currentTemp;
+        previousHumidity = currentHumidity;
+    }
 
-    // Display set temperature in the center of the display
-    tft.setTextSize(4);
-    tft.setCursor(60, 100);
-    dtostrf(setTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
-    tft.print(tempStr);
-    tft.println(useFahrenheit ? " F" : " C");
+    // Update set temperature only if it has changed
+    if (setTemp != previousSetTemp)
+    {
+        // Clear only the area that needs to be updated
+        tft.fillRect(60, 100, 200, 40, TFT_BLACK); // Clear set temperature area
+
+        // Display set temperature in the center of the display
+        tft.setTextSize(4);
+        tft.setCursor(60, 100);
+        char tempStr[6];
+        dtostrf(setTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
+        tft.print(tempStr);
+        tft.println(useFahrenheit ? " F" : " C");
+
+        // Update previous value
+        previousSetTemp = setTemp;
+    }
 
     // Draw buttons at the bottom
     drawButtons();
@@ -798,6 +837,7 @@ void saveSettings()
     preferences.putBool("fanRelayNeeded", fanRelayNeeded);
     preferences.putBool("useFahrenheit", useFahrenheit);
     preferences.putBool("mqttEnabled", mqttEnabled);
+    preferences.putBool("homeAssistantEnabled", homeAssistantEnabled);
     preferences.putInt("fanMinutesPerHour", fanMinutesPerHour);
     preferences.putInt("screenBlankTime", screenBlankTime);
     preferences.putString("location", location);
@@ -806,6 +846,9 @@ void saveSettings()
     preferences.putString("fanMode", fanMode);
 
     saveWiFiSettings();
+
+    // Debug print to confirm settings are saved
+    Serial.println("Settings saved.");
 }
 
 void loadSettings()
@@ -813,28 +856,39 @@ void loadSettings()
     setTemp = preferences.getFloat("setTemp", 72.0);
     tempSwing = preferences.getFloat("tempSwing", 1.0);
     autoChangeover = preferences.getBool("autoChangeover", false);
-    fanRelayNeeded = preferences.getBool("fanRelayNeeded", true);
+    fanRelayNeeded = preferences.getBool("fanRelayNeeded", false);
     useFahrenheit = preferences.getBool("useFahrenheit", true);
     mqttEnabled = preferences.getBool("mqttEnabled", false);
+    homeAssistantEnabled = preferences.getBool("homeAssistantEnabled", false); // Default to false
     fanMinutesPerHour = preferences.getInt("fanMinutesPerHour", 15);
     screenBlankTime = preferences.getInt("screenBlankTime", 120);
     location = preferences.getString("location", "54762");
     homeAssistantApiKey = preferences.getString("homeAssistantApiKey", "");
-    thermostatMode = preferences.getString("thermostatMode", "auto");
+    thermostatMode = preferences.getString("thermostatMode", "off");
     fanMode = preferences.getString("fanMode", "auto");
 
     wifiSSID = preferences.getString("wifiSSID", "");
     wifiPassword = preferences.getString("wifiPassword", "");
+
+    // Debug print to confirm settings are loaded
+    Serial.println("Settings loaded.");
 }
 
 void sendDataToHomeAssistant(float temperature, float humidity)
 {
-    if (WiFi.status() == WL_CONNECTED)
+    if (homeAssistantEnabled && WiFi.status() == WL_CONNECTED)
     {
         HTTPClient http;
         http.begin(homeAssistantUrl);
         http.addHeader("Content-Type", "application/json");
         http.addHeader("Authorization", "Bearer " + homeAssistantApiKey);
+
+        // Debug prints
+        Serial.println("Sending data to Home Assistant...");
+        Serial.print("URL: ");
+        Serial.println(homeAssistantUrl);
+        Serial.print("API Key: ");
+        Serial.println(homeAssistantApiKey);
 
         String payload = "{\"state\": \"" + String(temperature) + "\", \"attributes\": {\"humidity\": \"" + String(humidity) + "\"}}";
         int httpResponseCode = http.POST(payload);
@@ -852,6 +906,11 @@ void sendDataToHomeAssistant(float temperature, float humidity)
         }
 
         http.end();
+    }
+    else
+    {
+        // Debug print to indicate that Home Assistant is disabled
+        // Serial.println("Home Assistant integration is disabled.");
     }
 }
 

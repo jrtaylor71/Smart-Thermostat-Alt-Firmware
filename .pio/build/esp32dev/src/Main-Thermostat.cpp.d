@@ -207,15 +207,10 @@
  /home/jonnt/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
  /home/jonnt/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src/Wire.h \
  /home/jonnt/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \
- .pio/libdeps/esp32dev/Adafruit\ AHTX0/Adafruit_AHTX0.h \
- .pio/libdeps/esp32dev/Adafruit\ BusIO/Adafruit_BusIO_Register.h \
- .pio/libdeps/esp32dev/Adafruit\ BusIO/Adafruit_GenericDevice.h \
- .pio/libdeps/esp32dev/Adafruit\ BusIO/Adafruit_I2CDevice.h \
- .pio/libdeps/esp32dev/Adafruit\ BusIO/Adafruit_SPIDevice.h \
+ .pio/libdeps/esp32dev/DHT\ sensor\ library/DHT.h \
+ .pio/libdeps/esp32dev/TFT_eSPI/TFT_eSPI.h \
  /home/jonnt/.platformio/packages/framework-arduinoespressif32/libraries/SPI/src/SPI.h \
  /home/jonnt/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-spi.h \
- .pio/libdeps/esp32dev/Adafruit\ Unified\ Sensor/Adafruit_Sensor.h \
- .pio/libdeps/esp32dev/TFT_eSPI/TFT_eSPI.h \
  .pio/libdeps/esp32dev/TFT_eSPI/User_Setup_Select.h \
  .pio/libdeps/esp32dev/TFT_eSPI/User_Setup.h \
  .pio/libdeps/esp32dev/TFT_eSPI/TFT_Drivers/ILI9341_Defines.h \

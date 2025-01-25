@@ -1,9 +1,9 @@
-EEPROM
-Adafruit AHTX0
-TFT_eSPI
-Preferences
-WiFi
-PubSubClient
 Wire
-HTTPClient
+DHT sensor library
 ESP Async WebServer
+Preferences
+EEPROM
+PubSubClient
+HTTPClient
+TFT_eSPI
+WiFi
