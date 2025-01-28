@@ -527,6 +527,12 @@ void handleButtonPress(uint16_t x, uint16_t y)
         saveSettings();
         updateDisplay(currentTemp, currentHumidity);
     }
+    else
+    {
+        // Clear the display if touch is detected outside button areas
+        tft.fillScreen(TFT_BLACK);
+        updateDisplay(currentTemp, currentHumidity);
+    }
 }
 
 void setupMQTT()
