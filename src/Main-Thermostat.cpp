@@ -8,6 +8,7 @@
 #include <PubSubClient.h> // Include the MQTT library
 #include <esp_task_wdt.h> // Include the watchdog timer library
 #include <time.h>
+#include <ArduinoJson.h> // Include the ArduinoJson library
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
@@ -87,6 +88,9 @@ void connectToWiFi();
 void enterWiFiCredentials();
 void calibrateTouchScreen();
 void restoreDefaultSettings();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void sendMQTTData();
+void publishHomeAssistantDiscovery();
 
 uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibration data
 
@@ -192,6 +196,14 @@ void loop()
             lastMQTTAttemptTime = millis();
         }
         mqttClient.loop();
+        sendMQTTData();
+    }
+    else
+    {
+        if (mqttClient.connected())
+        {
+            mqttClient.disconnect();
+        }
     }
 
     // Read sensor data if sensor is available
@@ -538,6 +550,8 @@ void handleButtonPress(uint16_t x, uint16_t y)
 void setupMQTT()
 {
     mqttClient.setServer(mqttServer.c_str(), mqttPort);
+    mqttClient.setBufferSize(512); // Increase buffer size for larger messages
+    mqttClient.setCallback(mqttCallback);
 }
 
 void reconnectMQTT()
@@ -548,7 +562,16 @@ void reconnectMQTT()
         if (mqttClient.connect("ESP32Thermostat", mqttUsername.c_str(), mqttPassword.c_str()))
         {
             Serial.println("connected");
-            // Subscribe to topics or publish messages here
+            // Subscribe to topics
+            mqttClient.subscribe("thermostat/setTempHeat");
+            mqttClient.subscribe("thermostat/setTempCool");
+            mqttClient.subscribe("thermostat/tempSwing");
+            mqttClient.subscribe("thermostat/thermostatMode");
+            mqttClient.subscribe("thermostat/fanMode");
+            mqttClient.subscribe("thermostat/availability"); // Subscribe to availability topic
+
+            // Publish Home Assistant MQTT discovery messages
+            publishHomeAssistantDiscovery();
         }
         else
         {
@@ -557,6 +580,110 @@ void reconnectMQTT()
             Serial.println(" try again in 5 seconds");
             delay(5000);
         }
+    }
+}
+
+void publishHomeAssistantDiscovery()
+{
+    if (mqttEnabled)
+    {
+        char buffer[512];
+        StaticJsonDocument<512> doc;
+        doc.clear();
+
+        // Publish discovery message for thermostat
+        String thermostatConfig = "homeassistant/climate/esp32_thermostat/config";
+        doc["name"] = "ESP32 Thermostat";
+        doc["unique_id"] = "esp32_thermostat";
+        doc["current_temperature_topic"] = "thermostat/currentTemp";
+        doc["temperature_command_topic"] = "thermostat/setTempHeat";
+        doc["temperature_state_topic"] = "thermostat/setTempHeat";
+        doc["mode_command_topic"] = "thermostat/thermostatMode";
+        doc["mode_state_topic"] = "thermostat/thermostatMode";
+        doc["availability_topic"] = "thermostat/availability";
+        JsonArray modes = doc["modes"].to<JsonArray>();
+        modes.add("off");
+        modes.add("heat");
+        modes.add("cool");
+        modes.add("auto");
+        doc["fan_mode_command_topic"] = "thermostat/fanMode";
+        doc["fan_mode_state_topic"] = "thermostat/fanMode";
+        JsonArray fan_modes = doc["fan_modes"].to<JsonArray>();
+        fan_modes.add("auto");
+        fan_modes.add("on");
+        serializeJson(doc, buffer);
+        mqttClient.publish(thermostatConfig.c_str(), buffer, true);
+
+        // Publish discovery message for humidity sensor
+        String humidityConfig = "homeassistant/sensor/esp32_humidity/config";
+        doc.clear();
+        doc["name"] = "ESP32 Humidity";
+        doc["unique_id"] = "esp32_humidity";
+        doc["state_topic"] = "thermostat/currentHumidity";
+        doc["unit_of_measurement"] = "%";
+        doc["availability_topic"] = "thermostat/availability";
+        serializeJson(doc, buffer);
+        mqttClient.publish(humidityConfig.c_str(), buffer, true);
+
+        // Publish availability message
+        mqttClient.publish("thermostat/availability", "online", true);
+    }
+    else
+    {
+        // Remove all entities by publishing empty payloads
+        mqttClient.publish("homeassistant/climate/esp32_thermostat/config", "");
+        mqttClient.publish("homeassistant/sensor/esp32_humidity/config", "");
+        mqttClient.publish("thermostat/availability", "offline", true);
+    }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+    String message;
+    for (unsigned int i = 0; i < length; i++)
+    {
+        message += (char)payload[i];
+    }
+    Serial.print("Message arrived [");
+    Serial.print(topic);
+    Serial.print("] ");
+    Serial.println(message);
+
+    if (String(topic) == "thermostat/setTempHeat")
+    {
+        setTempHeat = message.toFloat();
+    }
+    else if (String(topic) == "thermostat/setTempCool")
+    {
+        setTempCool = message.toFloat();
+    }
+    else if (String(topic) == "thermostat/tempSwing")
+    {
+        tempSwing = message.toFloat();
+    }
+    else if (String(topic) == "thermostat/thermostatMode")
+    {
+        thermostatMode = message;
+    }
+    else if (String(topic) == "thermostat/fanMode")
+    {
+        fanMode = message;
+    }
+
+    saveSettings();
+}
+
+void sendMQTTData()
+{
+    if (mqttClient.connected())
+    {
+        mqttClient.publish("thermostat/currentTemp", String(currentTemp).c_str());
+        mqttClient.publish("thermostat/currentHumidity", String(currentHumidity).c_str());
+        mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str());
+        mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str());
+        mqttClient.publish("thermostat/tempSwing", String(tempSwing).c_str());
+        mqttClient.publish("thermostat/thermostatMode", thermostatMode.c_str());
+        mqttClient.publish("thermostat/fanMode", fanMode.c_str());
     }
 }
 
@@ -750,6 +877,7 @@ void handleWebRequests()
         html += "Home Assistant URL: <input type='text' name='homeAssistantUrl' value='" + homeAssistantUrl + "'><br>";
         html += "Home Assistant API Key: <input type='text' name='homeAssistantApiKey' value='" + homeAssistantApiKey + "'><br>";
         html += "MQTT Server: <input type='text' name='mqttServer' value='" + mqttServer + "'><br>";
+        html += "MQTT Port: <input type='text' name='mqttPort' value='" + String(mqttPort) + "'><br>"; // Add MQTT port input
         html += "MQTT Username: <input type='text' name='mqttUsername' value='" + mqttUsername + "'><br>";
         html += "MQTT Password: <input type='text' name='mqttPassword' value='" + mqttPassword + "'><br>";
         html += "WiFi SSID: <input type='text' name='wifiSSID' value='" + wifiSSID + "'><br>";
@@ -818,6 +946,8 @@ void handleWebRequests()
         }
         if (request->hasParam("mqttEnabled", true)) {
             mqttEnabled = request->getParam("mqttEnabled", true)->value() == "on";
+        } else {
+            mqttEnabled = false; // Ensure mqttEnabled is set to false if not present in the form
         }
         if (request->hasParam("homeAssistantEnabled", true)) {
             homeAssistantEnabled = request->getParam("homeAssistantEnabled", true)->value() == "on";
@@ -833,6 +963,9 @@ void handleWebRequests()
         }
         if (request->hasParam("mqttServer", true)) {
             mqttServer = request->getParam("mqttServer", true)->value(); // Ensure mqttServer is updated correctly
+        }
+        if (request->hasParam("mqttPort", true)) {
+            mqttPort = request->getParam("mqttPort", true)->value().toInt(); // Ensure mqttPort is updated correctly
         }
         if (request->hasParam("mqttUsername", true)) {
             mqttUsername = request->getParam("mqttUsername", true)->value(); // Ensure mqttUsername is updated correctly
@@ -859,13 +992,13 @@ void handleWebRequests()
         }
 
         saveSettings();
+        publishHomeAssistantDiscovery(); // Publish discovery messages after saving settings
         String response = "<html><body><h1>Settings saved!</h1>";
         response += "<p>Returning to the home page in 5 seconds...</p>";
         response += "<script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>";
         response += "</body></html>";
         request->send(200, "text/html", response); });
 
-    // Handle RESTful commands from Home Assistant
     server.on("/set_heating", HTTP_POST, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("heating", true)) {
@@ -912,6 +1045,39 @@ void handleWebRequests()
         float currentHumidity = dht.readHumidity();
         String response = "{\"humidity\": \"" + String(currentHumidity) + "\"}";
         request->send(200, "application/json", response); });
+
+    server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        String response = "{\"currentTemp\": \"" + String(currentTemp) + "\",";
+        response += "\"currentHumidity\": \"" + String(currentHumidity) + "\",";
+        response += "\"setTempHeat\": \"" + String(setTempHeat) + "\",";
+        response += "\"setTempCool\": \"" + String(setTempCool) + "\",";
+        response += "\"tempSwing\": \"" + String(tempSwing) + "\",";
+        response += "\"thermostatMode\": \"" + thermostatMode + "\",";
+        response += "\"fanMode\": \"" + fanMode + "\"}";
+        request->send(200, "application/json", response); });
+
+    server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("setTempHeat", true)) {
+            setTempHeat = request->getParam("setTempHeat", true)->value().toFloat();
+        }
+        if (request->hasParam("setTempCool", true)) {
+            setTempCool = request->getParam("setTempCool", true)->value().toFloat();
+        }
+        if (request->hasParam("tempSwing", true)) {
+            tempSwing = request->getParam("tempSwing", true)->value().toFloat();
+        }
+        if (request->hasParam("thermostatMode", true)) {
+            thermostatMode = request->getParam("thermostatMode", true)->value();
+        }
+        if (request->hasParam("fanMode", true)) {
+            fanMode = request->getParam("fanMode", true)->value();
+        }
+
+        saveSettings();
+        request->send(200, "application/json", "{\"status\": \"success\"}");
+    });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
@@ -1008,6 +1174,7 @@ void saveSettings()
     preferences.putString("haUrl", homeAssistantUrl); // Shortened key
     preferences.putString("haApiKey", homeAssistantApiKey); // Shortened key
     preferences.putString("mqttServer", mqttServer);
+    preferences.putInt("mqttPort", mqttPort); // Save MQTT port
     preferences.putString("mqttUser", mqttUsername); // Shortened key
     preferences.putString("mqttPass", mqttPassword); // Shortened key
     preferences.putString("wifiSSID", wifiSSID);
@@ -1037,6 +1204,7 @@ void loadSettings()
     homeAssistantUrl = preferences.getString("haUrl", "http://homeassistant.local:8123/api/states/sensor.esp32_thermostat"); // Shortened key
     homeAssistantApiKey = preferences.getString("haApiKey", ""); // Shortened key
     mqttServer = preferences.getString("mqttServer", "192.168.183.238");
+    mqttPort = preferences.getInt("mqttPort", 1883); // Load MQTT port
     mqttUsername = preferences.getString("mqttUser", "your_username"); // Shortened key
     mqttPassword = preferences.getString("mqttPass", "your_password"); // Shortened key
     wifiSSID = preferences.getString("wifiSSID", "");

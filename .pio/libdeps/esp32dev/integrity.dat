@@ -1,9 +1,10 @@
+Wire
+ESP Async WebServer
 EEPROM
 DHT sensor library
-Preferences
-ESP Async WebServer
-WiFi
 HTTPClient
-TFT_eSPI
-Wire
+WiFi
+Preferences
 PubSubClient
+bblanchon/ArduinoJson@^7.3.0
+TFT_eSPI
