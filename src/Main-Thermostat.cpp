@@ -76,6 +76,19 @@ bool fanOn = false;
 String thermostatMode = "off"; // Default thermostat mode
 String fanMode = "auto"; // Default fan mode
 
+// Add these declarations at the beginning of the file or in the appropriate section for global variables
+bool settingsChanged = false;
+bool mqttCallbackActive = false;
+unsigned long lastMQTTMessageTime = 0;
+const unsigned long mqttDebounceTime = 1000; // 1 second debounce time
+
+bool tempHeatChanged = false;
+bool tempCoolChanged = false;
+bool tempSwingChanged = false;
+bool thermostatModeChanged = false;
+bool fanModeChanged = false;
+bool handlingMQTTMessage = false; // Add this flag
+
 // Function prototypes
 void setupWiFi();
 void controlRelays(float currentTemp);
@@ -505,10 +518,22 @@ void handleButtonPress(uint16_t x, uint16_t y)
         if (thermostatMode == "heat" || thermostatMode == "auto")
         {
             setTempHeat += 1.0;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempCool = setTempHeat + tempDifferential;
+                if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
+            }
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
         }
         else if (thermostatMode == "cool")
         {
             setTempCool += 1.0;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempHeat = setTempCool - tempDifferential;
+                if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
+            }
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
         }
         saveSettings();
         updateDisplay(currentTemp, currentHumidity);
@@ -518,10 +543,22 @@ void handleButtonPress(uint16_t x, uint16_t y)
         if (thermostatMode == "heat" || thermostatMode == "auto")
         {
             setTempHeat -= 1.0;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempCool = setTempHeat + tempDifferential;
+                if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
+            }
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
         }
         else if (thermostatMode == "cool")
         {
             setTempCool -= 1.0;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempHeat = setTempCool - tempDifferential;
+                if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
+            }
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
         }
         saveSettings();
         updateDisplay(currentTemp, currentHumidity);
@@ -557,127 +594,6 @@ void handleButtonPress(uint16_t x, uint16_t y)
         // Clear the display if touch is detected outside button areas
         tft.fillScreen(TFT_BLACK);
         updateDisplay(currentTemp, currentHumidity);
-    }
-}
-
-bool settingsChanged = false;
-bool mqttCallbackActive = false;
-unsigned long lastMQTTMessageTime = 0;
-const unsigned long mqttDebounceTime = 1000; // 1 second debounce time
-
-bool tempHeatChanged = false;
-bool tempCoolChanged = false;
-bool tempSwingChanged = false;
-bool thermostatModeChanged = false;
-bool fanModeChanged = false;
-
-void mqttCallback(char* topic, byte* payload, unsigned int length)
-{
-    unsigned long currentTime = millis();
-    if (mqttCallbackActive || (currentTime - lastMQTTMessageTime < mqttDebounceTime)) return;
-
-    mqttCallbackActive = true;
-    lastMQTTMessageTime = currentTime;
-
-    String message;
-    for (unsigned int i = 0; i < length; i++)
-    {
-        message += (char)payload[i];
-    }
-    Serial.print("Message arrived [");
-    Serial.print(topic);
-    Serial.print("] ");
-    Serial.println(message);
-
-    if (String(topic) == "thermostat/setTempHeat")
-    {
-        float newSetTempHeat = message.toFloat();
-        if (newSetTempHeat != setTempHeat)
-        {
-            setTempHeat = newSetTempHeat;
-            settingsChanged = true;
-            tempHeatChanged = true;
-        }
-    }
-    else if (String(topic) == "thermostat/setTempCool")
-    {
-        float newSetTempCool = message.toFloat();
-        if (newSetTempCool != setTempCool)
-        {
-            setTempCool = newSetTempCool;
-            settingsChanged = true;
-            tempCoolChanged = true;
-        }
-    }
-    else if (String(topic) == "thermostat/tempSwing")
-    {
-        float newTempSwing = message.toFloat();
-        if (newTempSwing != tempSwing)
-        {
-            tempSwing = newTempSwing;
-            settingsChanged = true;
-            tempSwingChanged = true;
-        }
-    }
-    else if (String(topic) == "thermostat/thermostatMode")
-    {
-        if (message != thermostatMode)
-        {
-            thermostatMode = message;
-            settingsChanged = true;
-            thermostatModeChanged = true;
-        }
-    }
-    else if (String(topic) == "thermostat/fanMode")
-    {
-        if (message != fanMode)
-        {
-            fanMode = message;
-            settingsChanged = true;
-            fanModeChanged = true;
-        }
-    }
-
-    if (settingsChanged)
-    {
-        saveSettings();
-        settingsChanged = false;
-    }
-
-    mqttCallbackActive = false;
-}
-
-void sendMQTTData()
-{
-    if (mqttClient.connected() && !mqttCallbackActive)
-    {
-        if (tempHeatChanged)
-        {
-            mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
-            tempHeatChanged = false;
-        }
-        if (tempCoolChanged)
-        {
-            mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
-            tempCoolChanged = false;
-        }
-        if (tempSwingChanged)
-        {
-            mqttClient.publish("thermostat/tempSwing", String(tempSwing).c_str(), true);
-            tempSwingChanged = false;
-        }
-        if (thermostatModeChanged)
-        {
-            mqttClient.publish("thermostat/thermostatMode", thermostatMode.c_str(), true);
-            thermostatModeChanged = false;
-        }
-        if (fanModeChanged)
-        {
-            mqttClient.publish("thermostat/fanMode", fanMode.c_str(), true);
-            fanModeChanged = false;
-        }
-        mqttClient.publish("thermostat/currentTemp", String(currentTemp).c_str(), true);
-        mqttClient.publish("thermostat/currentHumidity", String(currentHumidity).c_str(), true);
     }
 }
 
@@ -722,6 +638,7 @@ void publishHomeAssistantDiscovery()
     if (mqttEnabled)
     {
         char buffer[512];
+        // IMPORTANT: Use StaticJsonDocument<512> to ensure compatibility with Home Assistant
         StaticJsonDocument<512> doc;
 
         // Publish discovery message for thermostat
@@ -770,6 +687,150 @@ void publishHomeAssistantDiscovery()
     }
 }
 
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+    if (handlingMQTTMessage) return; // Prevent handling messages while processing another
+
+    unsigned long currentTime = millis();
+    if (mqttCallbackActive || (currentTime - lastMQTTMessageTime < mqttDebounceTime)) return;
+
+    mqttCallbackActive = true;
+    lastMQTTMessageTime = currentTime;
+
+    String message;
+    for (unsigned int i = 0; i < length; i++)
+    {
+        message += (char)payload[i];
+    }
+    Serial.print("Message arrived [");
+    Serial.print(topic);
+    Serial.print("] ");
+    Serial.println(message);
+
+    bool valueChanged = false;
+
+    handlingMQTTMessage = true; // Set the flag to indicate we are handling an MQTT message
+
+    if (String(topic) == "thermostat/setTempHeat")
+    {
+        float newSetTempHeat = message.toFloat();
+        if (newSetTempHeat != setTempHeat)
+        {
+            setTempHeat = newSetTempHeat;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempCool = setTempHeat + tempDifferential;
+                // Do not publish back to MQTT here
+            }
+            valueChanged = true;
+            tempHeatChanged = true;
+        }
+    }
+    else if (String(topic) == "thermostat/setTempCool")
+    {
+        float newSetTempCool = message.toFloat();
+        if (newSetTempCool != setTempCool)
+        {
+            setTempCool = newSetTempCool;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempHeat = setTempCool - tempDifferential;
+                // Do not publish back to MQTT here
+            }
+            valueChanged = true;
+            tempCoolChanged = true;
+        }
+    }
+    else if (String(topic) == "thermostat/tempSwing")
+    {
+        float newTempSwing = message.toFloat();
+        if (newTempSwing != tempSwing)
+        {
+            tempSwing = newTempSwing;
+            valueChanged = true;
+            tempSwingChanged = true;
+        }
+    }
+    else if (String(topic) == "thermostat/thermostatMode")
+    {
+        if (message != thermostatMode)
+        {
+            thermostatMode = message;
+            valueChanged = true;
+            thermostatModeChanged = true;
+        }
+    }
+    else if (String(topic) == "thermostat/fanMode")
+    {
+        if (message != fanMode)
+        {
+            fanMode = message;
+            valueChanged = true;
+            fanModeChanged = true;
+        }
+    }
+
+    if (valueChanged)
+    {
+        settingsChanged = true;
+        saveSettings();
+        settingsChanged = false;
+    }
+
+    handlingMQTTMessage = false; // Reset the flag after handling the message
+    mqttCallbackActive = false;
+}
+
+void sendMQTTData()
+{
+    static float lastTemp = 0.0;
+    static float lastHumidity = 0.0;
+    static float lastSetTempHeat = 0.0;
+    static float lastSetTempCool = 0.0;
+    static float lastTempSwing = 0.0;
+    static String lastThermostatMode = "";
+    static String lastFanMode = "";
+
+    if (mqttClient.connected())
+    {
+        if (currentTemp != lastTemp)
+        {
+            mqttClient.publish("thermostat/currentTemp", String(currentTemp).c_str());
+            lastTemp = currentTemp;
+        }
+        if (currentHumidity != lastHumidity)
+        {
+            mqttClient.publish("thermostat/currentHumidity", String(currentHumidity).c_str());
+            lastHumidity = currentHumidity;
+        }
+        if (setTempHeat != lastSetTempHeat)
+        {
+            mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str());
+            lastSetTempHeat = setTempHeat;
+        }
+        if (setTempCool != lastSetTempCool)
+        {
+            mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str());
+            lastSetTempCool = setTempCool;
+        }
+        if (tempSwing != lastTempSwing)
+        {
+            mqttClient.publish("thermostat/tempSwing", String(tempSwing).c_str());
+            lastTempSwing = tempSwing;
+        }
+        if (thermostatMode != lastThermostatMode)
+        {
+            mqttClient.publish("thermostat/thermostatMode", thermostatMode.c_str());
+            lastThermostatMode = thermostatMode;
+        }
+        if (fanMode != lastFanMode)
+        {
+            mqttClient.publish("thermostat/fanMode", fanMode.c_str());
+            lastFanMode = fanMode;
+        }
+    }
+}
+
 void controlRelays(float currentTemp)
 {
     if (thermostatMode == "off")
@@ -784,67 +845,7 @@ void controlRelays(float currentTemp)
         coolingOn = false;
         fanOn = false;
     }
-    else if (thermostatMode == "heat")
-    {
-        // Heating logic
-        if (currentTemp < setTempHeat - tempSwing)
-        {
-            digitalWrite(heatRelay1Pin, HIGH); // First stage heat
-            heatingOn = true;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp < setTempHeat - tempSwing - 1.0)
-            {
-                digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
-            }
-            else
-            {
-                digitalWrite(heatRelay2Pin, LOW);
-            }
-        }
-        else
-        {
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
-            heatingOn = false;
-        }
-
-        // Ensure cooling relays are off
-        digitalWrite(coolRelay1Pin, LOW);
-        digitalWrite(coolRelay2Pin, LOW);
-        coolingOn = false;
-    }
-    else if (thermostatMode == "cool")
-    {
-        // Cooling logic
-        if (currentTemp > setTempCool + tempSwing)
-        {
-            digitalWrite(coolRelay1Pin, HIGH); // First stage cool
-            coolingOn = true;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp > setTempCool + tempSwing + 1.0)
-            {
-                digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
-            }
-            else
-            {
-                digitalWrite(coolRelay2Pin, LOW);
-            }
-        }
-        else
-        {
-            digitalWrite(coolRelay1Pin, LOW);
-            digitalWrite(coolRelay2Pin, LOW);
-            coolingOn = false;
-        }
-
-        // Ensure heating relays are off
-        digitalWrite(heatRelay1Pin, LOW);
-        digitalWrite(heatRelay2Pin, LOW);
-        heatingOn = false;
-    }
-    else if (thermostatMode == "auto")
+    else if (autoChangeover)
     {
         // Auto changeover logic
         if (currentTemp < setTempHeat - tempSwing)
@@ -886,6 +887,54 @@ void controlRelays(float currentTemp)
             digitalWrite(coolRelay1Pin, LOW);
             digitalWrite(coolRelay2Pin, LOW);
             heatingOn = false;
+            coolingOn = false;
+        }
+    }
+    else
+    {
+        // Heating logic
+        if (currentTemp < setTempHeat - tempSwing)
+        {
+            digitalWrite(heatRelay1Pin, HIGH); // First stage heat
+            heatingOn = true;
+            if (fanRelayNeeded)
+                digitalWrite(fanRelayPin, HIGH);
+            if (currentTemp < setTempHeat - tempSwing - 1.0)
+            {
+                digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
+            }
+            else
+            {
+                digitalWrite(heatRelay2Pin, LOW);
+            }
+        }
+        else
+        {
+            digitalWrite(heatRelay1Pin, LOW);
+            digitalWrite(heatRelay2Pin, LOW);
+            heatingOn = false;
+        }
+
+        // Cooling logic
+        if (currentTemp > setTempCool + tempSwing)
+        {
+            digitalWrite(coolRelay1Pin, HIGH); // First stage cool
+            coolingOn = true;
+            if (fanRelayNeeded)
+                digitalWrite(fanRelayPin, HIGH);
+            if (currentTemp > setTempCool + tempSwing + 1.0)
+            {
+                digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
+            }
+            else
+            {
+                digitalWrite(coolRelay2Pin, LOW);
+            }
+        }
+        else
+        {
+            digitalWrite(coolRelay1Pin, LOW);
+            digitalWrite(coolRelay2Pin, LOW);
             coolingOn = false;
         }
     }
@@ -970,11 +1019,13 @@ void handleWebRequests()
 {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = "<html><head><meta http-equiv='refresh' content='1'></head><body>";
+        String html = "<html><head><meta http-equiv='refresh' content='10'></head><body>"; // Changed refresh time to 10 seconds
         html += "<h1>Thermostat Status</h1>";
         html += "<p>Current Temperature: " + String(currentTemp) + (useFahrenheit ? " F" : " C") + "</p>";
         html += "<p>Current Humidity: " + String(currentHumidity) + " %</p>";
-        html += "<p>Hydronic Temperature: " + String(hydronicTemp) + " F</p>";
+        if (hydronicHeatingEnabled) {
+            html += "<p>Hydronic Temperature: " + String(hydronicTemp) + " F</p>";
+        }
         html += "<p>Thermostat Mode: " + thermostatMode + "</p>";
         html += "<p>Fan Mode: " + fanMode + "</p>";
         html += "<p>Heating Relay 1: " + String(digitalRead(heatRelay1Pin) ? "ON" : "OFF") + "</p>";
@@ -1024,6 +1075,9 @@ void handleWebRequests()
         html += "<option value='EST5EDT,M3.2.0,M11.1.0' " + String(timeZone == "EST5EDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Eastern Time (EST)</option>";
         html += "</select><br>";
         html += "<input type='submit' value='Save Settings'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'>"; // Add form to navigate back to the status page
+        html += "<input type='submit' value='Back to Status'>";
         html += "</form>";
         html += "<form action='/confirm_restore' method='GET'>";
         html += "<input type='submit' value='Restore Defaults'>";
