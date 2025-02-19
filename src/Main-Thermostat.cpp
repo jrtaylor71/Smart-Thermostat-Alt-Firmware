@@ -64,7 +64,7 @@ const float tempDifferential = 4.0; // Fixed differential between heat and cool 
 bool use24HourClock = true; // Default to 24-hour clock
 
 // MQTT settings
-String mqttServer = "192.168.183.238"; // Replace with your MQTT server
+String mqttServer = "0.0.0.0"; // Replace with your MQTT server
 int mqttPort = 1883;                    // Replace with your MQTT port
 String mqttUsername = "your_username";  // Replace with your MQTT username
 String mqttPassword = "your_password";  // Replace with your MQTT password
@@ -536,6 +536,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
         }
         saveSettings();
+        sendMQTTData();
         updateDisplay(currentTemp, currentHumidity);
     }
     else if (x > 0 && x < 40 && y > 200 && y < 240) // Adjusted coordinates for the "-" button
@@ -561,6 +562,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
         }
         saveSettings();
+        sendMQTTData();
         updateDisplay(currentTemp, currentHumidity);
     }
     else if (x > 130 && x < 190 && y > 200 && y < 240)
@@ -576,6 +578,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
             thermostatMode = "auto";
 
         saveSettings();
+        sendMQTTData();
         updateDisplay(currentTemp, currentHumidity);
     }
     else if (x > 200 && x < 260 && y > 200 && y < 240)
@@ -587,6 +590,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
             fanMode = "auto";
 
         saveSettings();
+        sendMQTTData();
         updateDisplay(currentTemp, currentHumidity);
     }
     else
@@ -1212,6 +1216,7 @@ void handleWebRequests()
         }
 
         saveSettings();
+        sendMQTTData();
         publishHomeAssistantDiscovery(); // Publish discovery messages after saving settings
         String response = "<html><body><h1>Settings saved!</h1>";
         response += "<p>Returning to the home page in 5 seconds...</p>";
@@ -1296,6 +1301,7 @@ void handleWebRequests()
         }
 
         saveSettings();
+        sendMQTTData();
         request->send(200, "application/json", "{\"status\": \"success\"}");
     });
 }
