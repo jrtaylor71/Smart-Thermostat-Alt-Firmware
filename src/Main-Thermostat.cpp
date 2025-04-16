@@ -50,7 +50,7 @@ const int fanRelayPin = 25;
 float setTempHeat = 72.0; // Default set temperature for heating in Fahrenheit
 float setTempCool = 76.0; // Default set temperature for cooling in Fahrenheit
 float tempSwing = 1.0;
-bool autoChangeover = false;
+bool autoChangeover = true;
 bool fanRelayNeeded = false;
 bool useFahrenheit = true; // Default to Fahrenheit
 bool mqttEnabled = false; // Default to MQTT disabled
@@ -1019,7 +1019,7 @@ void handleWebRequests()
         html += "Set Temp Heat: <input type='text' name='setTempHeat' value='" + String(setTempHeat) + "'><br>";
         html += "Set Temp Cool: <input type='text' name='setTempCool' value='" + String(setTempCool) + "'><br>";
         html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
-        html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
+        // html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
         html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
         html += "Use Fahrenheit: <input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + "><br>";
         html += "MQTT Enabled: <input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + "><br>";
@@ -1387,7 +1387,7 @@ void loadSettings()
     setTempHeat = preferences.getFloat("setTempHeat", 72.0);
     setTempCool = preferences.getFloat("setTempCool", 76.0);
     tempSwing = preferences.getFloat("tempSwing", 1.0);
-    autoChangeover = preferences.getBool("autoChangeover", false);
+    autoChangeover = preferences.getBool("autoChangeover", true);
     fanRelayNeeded = preferences.getBool("fanRelayNeeded", false);
     useFahrenheit = preferences.getBool("useFahrenheit", true);
     mqttEnabled = preferences.getBool("mqttEnabled", false);
@@ -1529,7 +1529,7 @@ void restoreDefaultSettings()
     setTempHeat = 72.0;
     setTempCool = 76.0;
     tempSwing = 1.0;
-    autoChangeover = false;
+    autoChangeover = true;
     fanRelayNeeded = false;
     useFahrenheit = true;
     mqttEnabled = false;
