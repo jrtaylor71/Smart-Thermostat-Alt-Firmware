@@ -30,6 +30,7 @@
 #include <ArduinoJson.h> // Include the ArduinoJson library
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <Update.h> // For OTA firmware update
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
@@ -1148,12 +1149,9 @@ void handleWebRequests()
         html += "</select><br>";
         html += "<input type='submit' value='Save Settings'>";
         html += "</form>";
-        html += "<form action='/' method='GET'>"; // Add form to navigate back to the status page
-        html += "<input type='submit' value='Back to Status'>";
-        html += "</form>";
-        html += "<form action='/confirm_restore' method='GET'>";
-        html += "<input type='submit' value='Restore Defaults'>";
-        html += "</form>";
+        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
+        html += "<form action='/update' method='GET'><input type='submit' value='OTA Update'></form>";
+        html += "<form action='/confirm_restore' method='GET'><input type='submit' value='Restore Defaults'></form>";
         html += "</body></html>";
 
         request->send(200, "text/html", html);
@@ -1366,6 +1364,52 @@ void handleWebRequests()
         delay(1000);
         ESP.restart();
     });
+
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
+    {
+        String html = "<html><body>";
+        html += "<h1>OTA Firmware Update</h1>";
+        html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
+        html += "<input type='file' name='firmware'>";
+        html += "<input type='submit' value='Update Firmware'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
+        html += "</body></html>";
+        request->send(200, "text/html", html);
+    });
+
+    server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
+    {
+        if (Update.hasError()) {
+            request->send(500, "text/plain", "Firmware Update Failed!");
+        } else {
+            request->send(200, "text/plain", "Firmware Update Successful! Rebooting...");
+            delay(1000);
+            ESP.restart();
+        }
+    },
+    [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+    {
+        static size_t updateSize = 0;
+        if (!index) {
+            Serial.printf("Update Start: %s\n", filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                Update.printError(Serial);
+            }
+            updateSize = 0;
+        }
+        if (Update.write(data, len) != len) {
+            Update.printError(Serial);
+        }
+        updateSize += len;
+        if (final) {
+            if (Update.end(true)) {
+                Serial.printf("Update Success: %u bytes\n", updateSize);
+            } else {
+                Update.printError(Serial);
+            }
+        }
+    });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
@@ -1450,64 +1494,114 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
 void saveSettings()
 {
-    preferences.putFloat("setTempHeat", setTempHeat);
-    preferences.putFloat("setTempCool", setTempCool);
-    preferences.putFloat("tempSwing", tempSwing);
-    preferences.putFloat("autoTempSwing", autoTempSwing);
-    preferences.putBool("autoChangeover", autoChangeover);
-    preferences.putBool("fanRelayNeeded", fanRelayNeeded);
-    preferences.putBool("useFahrenheit", useFahrenheit);
-    preferences.putBool("mqttEnabled", mqttEnabled);
-    preferences.putInt("fanMinPerHr", fanMinutesPerHour); // Shortened key
-    preferences.putString("mqttServer", mqttServer);
-    preferences.putInt("mqttPort", mqttPort); // Save MQTT port
-    preferences.putString("mqttUser", mqttUsername); // Shortened key
-    preferences.putString("mqttPass", mqttPassword); // Shortened key
-    preferences.putString("wifiSSID", wifiSSID);
-    preferences.putString("wifiPass", wifiPassword); // Shortened key
-    preferences.putString("thermoMode", thermostatMode); // Shortened key
-    preferences.putString("fanMode", fanMode);
-    preferences.putString("timeZone", timeZone); // Save time zone
-    preferences.putBool("use24HourClock", use24HourClock); // Save clock format
-    preferences.putBool("hydroHeatEn", hydronicHeatingEnabled); // Shortened key
-    preferences.putFloat("hydroTempLow", hydronicTempLow); // Save hydronic low temperature
-    preferences.putFloat("hydroTempHigh", hydronicTempHigh); // Save hydronic high temperature
-    preferences.putString("hostname", hostname); // Save hostname
+    Serial.println("Saving settings:");
+    Serial.print("setTempHeat: "); Serial.println(setTempHeat);
+    Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("tempSwing: "); Serial.println(tempSwing);
+    Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
+    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
+    Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
+    Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
+    Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
+    Serial.print("fanMinutesPerHour: "); Serial.println(fanMinutesPerHour);
+    Serial.print("mqttServer: "); Serial.println(mqttServer);
+    Serial.print("mqttPort: "); Serial.println(mqttPort);
+    Serial.print("mqttUsername: "); Serial.println(mqttUsername);
+    Serial.print("mqttPassword: "); Serial.println(mqttPassword);
+    Serial.print("wifiSSID: "); Serial.println(wifiSSID);
+    Serial.print("wifiPassword: "); Serial.println(wifiPassword);
+    Serial.print("thermostatMode: "); Serial.println(thermostatMode);
+    Serial.print("fanMode: "); Serial.println(fanMode);
+    Serial.print("timeZone: "); Serial.println(timeZone);
+    Serial.print("use24HourClock: "); Serial.println(use24HourClock);
+    Serial.print("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
+    Serial.print("hydronicTempLow: "); Serial.println(hydronicTempLow);
+    Serial.print("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
+    Serial.print("hostname: "); Serial.println(hostname);
+
+    preferences.putFloat("setHeat", setTempHeat);
+    preferences.putFloat("setCool", setTempCool);
+    preferences.putFloat("swing", tempSwing);
+    preferences.putFloat("autoSwing", autoTempSwing);
+    preferences.putBool("autoChg", autoChangeover);
+    preferences.putBool("fanRelay", fanRelayNeeded);
+    preferences.putBool("useF", useFahrenheit);
+    preferences.putBool("mqttEn", mqttEnabled);
+    preferences.putInt("fanMinHr", fanMinutesPerHour);
+    preferences.putString("mqttSrv", mqttServer);
+    preferences.putInt("mqttPrt", mqttPort);
+    preferences.putString("mqttUsr", mqttUsername);
+    preferences.putString("mqttPwd", mqttPassword);
+    preferences.putString("wifiID", wifiSSID);
+    preferences.putString("wifiPwd", wifiPassword);
+    preferences.putString("thermoMd", thermostatMode);
+    preferences.putString("fanMd", fanMode);
+    preferences.putString("tz", timeZone);
+    preferences.putBool("use24Clk", use24HourClock);
+    preferences.putBool("hydHeat", hydronicHeatingEnabled);
+    preferences.putFloat("hydLow", hydronicTempLow);
+    preferences.putFloat("hydHigh", hydronicTempHigh);
+    preferences.putString("host", hostname);
 
     saveWiFiSettings();
 
     // Debug print to confirm settings are saved
-    Serial.println("Settings saved.");
+    Serial.print("Settings saved.");
 }
 
 void loadSettings()
 {
-    setTempHeat = preferences.getFloat("setTempHeat", 72.0);
-    setTempCool = preferences.getFloat("setTempCool", 76.0);
-    tempSwing = preferences.getFloat("tempSwing", 1.0);
-    autoTempSwing = preferences.getFloat("autoTempSwing", 3.0);
-    autoChangeover = preferences.getBool("autoChangeover", true);
-    fanRelayNeeded = preferences.getBool("fanRelayNeeded", false);
-    useFahrenheit = preferences.getBool("useFahrenheit", true);
-    mqttEnabled = preferences.getBool("mqttEnabled", false);
-    fanMinutesPerHour = preferences.getInt("fanMinPerHr", 15); // Shortened key
-    mqttServer = preferences.getString("mqttServer", "192.168.183.238");
-    mqttPort = preferences.getInt("mqttPort", 1883); // Load MQTT port
-    mqttUsername = preferences.getString("mqttUser", "your_username"); // Shortened key
-    mqttPassword = preferences.getString("mqttPass", "your_password"); // Shortened key
-    wifiSSID = preferences.getString("wifiSSID", "");
-    wifiPassword = preferences.getString("wifiPass", ""); // Shortened key
-    thermostatMode = preferences.getString("thermoMode", "off"); // Ensure correct default value
-    fanMode = preferences.getString("fanMode", "auto");
-    timeZone = preferences.getString("timeZone", "CST6CDT,M3.2.0,M11.1.0"); // Load time zone
-    use24HourClock = preferences.getBool("use24HourClock", true); // Load clock format
-    hydronicHeatingEnabled = preferences.getBool("hydroHeatEn", false); // Shortened key
-    hydronicTempLow = preferences.getFloat("hydroTempLow", 120.0); // Load hydronic low temperature
-    hydronicTempHigh = preferences.getFloat("hydroTempHigh", 130.0); // Load hydronic high temperature
-    hostname = preferences.getString("hostname", "ESP32-Simple-Thermostat"); // Load hostname
+    setTempHeat = preferences.getFloat("setHeat", 72.0);
+    setTempCool = preferences.getFloat("setCool", 76.0);
+    tempSwing = preferences.getFloat("swing", 1.0);
+    autoTempSwing = preferences.getFloat("autoSwing", 3.0);
+    autoChangeover = preferences.getBool("autoChg", true);
+    fanRelayNeeded = preferences.getBool("fanRelay", false);
+    useFahrenheit = preferences.getBool("useF", true);
+    mqttEnabled = preferences.getBool("mqttEn", false);
+    fanMinutesPerHour = preferences.getInt("fanMinHr", 15);
+    mqttServer = preferences.getString("mqttSrv", "192.168.183.238");
+    mqttPort = preferences.getInt("mqttPrt", 1883);
+    mqttUsername = preferences.getString("mqttUsr", "your_username");
+    mqttPassword = preferences.getString("mqttPwd", "your_password");
+    wifiSSID = preferences.getString("wifiID", "");
+    wifiPassword = preferences.getString("wifiPwd", "");
+    thermostatMode = preferences.getString("thermoMd", "off");
+    fanMode = preferences.getString("fanMd", "auto");
+    timeZone = preferences.getString("tz", "CST6CDT,M3.2.0,M11.1.0");
+    use24HourClock = preferences.getBool("use24Clk", true);
+    hydronicHeatingEnabled = preferences.getBool("hydHeat", false);
+    hydronicTempLow = preferences.getFloat("hydLow", 120.0);
+    hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
+    hostname = preferences.getString("host", "ESP32-Simple-Thermostat");
+
+    Serial.println("Loading settings:");
+    Serial.print("setTempHeat: "); Serial.println(setTempHeat);
+    Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("tempSwing: "); Serial.println(tempSwing);
+    Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
+    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
+    Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
+    Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
+    Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
+    Serial.print("fanMinutesPerHour: "); Serial.println(fanMinutesPerHour);
+    Serial.print("mqttServer: "); Serial.println(mqttServer);
+    Serial.print("mqttPort: "); Serial.println(mqttPort);
+    Serial.print("mqttUsername: "); Serial.println(mqttUsername);
+    Serial.print("mqttPassword: "); Serial.println(mqttPassword);
+    Serial.print("wifiSSID: "); Serial.println(wifiSSID);
+    Serial.print("wifiPassword: "); Serial.println(wifiPassword);
+    Serial.print("thermostatMode: "); Serial.println(thermostatMode);
+    Serial.print("fanMode: "); Serial.println(fanMode);
+    Serial.print("timeZone: "); Serial.println(timeZone);
+    Serial.print("use24HourClock: "); Serial.println(use24HourClock);
+    Serial.print("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
+    Serial.print("hydronicTempLow: "); Serial.println(hydronicTempLow);
+    Serial.print("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
+    Serial.print("hostname: "); Serial.println(hostname);
 
     // Debug print to confirm settings are loaded
-    Serial.println("Settings loaded.");
+    Serial.print("Settings loaded.");
 }
 
 float convertCtoF(float celsius)
@@ -1646,6 +1740,10 @@ void restoreDefaultSettings()
     use24HourClock = true; // Reset clock format to default
     hydronicHeatingEnabled = false; // Reset hydronic heating setting to default
     hostname = "ESP32-Simple-Thermostat"; // Reset hostname to default
+
+    mqttPort = 1883; // Reset MQTT port default
+    hydronicTempLow = 120.0; // Reset hydronic low temp
+    hydronicTempHigh = 130.0; // Reset hydronic high temp
 
     saveSettings();
 

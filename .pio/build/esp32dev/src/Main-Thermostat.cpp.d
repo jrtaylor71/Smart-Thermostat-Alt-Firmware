@@ -353,4 +353,7 @@
  .pio/libdeps/esp32dev/ArduinoJson/src/ArduinoJson/Configuration.hpp \
  .pio/libdeps/esp32dev/OneWire/OneWire.h \
  .pio/libdeps/esp32dev/OneWire/util/OneWire_direct_regtype.h \
- .pio/libdeps/esp32dev/DallasTemperature/DallasTemperature.h
+ .pio/libdeps/esp32dev/DallasTemperature/DallasTemperature.h \
+ /home/jonnt/.platformio/packages/framework-arduinoespressif32/libraries/Update/src/Update.h \
+ /home/jonnt/.platformio/packages/framework-arduinoespressif32/cores/esp32/MD5Builder.h \
+ /home/jonnt/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_rom/include/esp_rom_md5.h
