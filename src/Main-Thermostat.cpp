@@ -69,6 +69,7 @@ const int fanRelayPin = 25;
 // Settings
 float setTempHeat = 72.0; // Default set temperature for heating in Fahrenheit
 float setTempCool = 76.0; // Default set temperature for cooling in Fahrenheit
+float setTempAuto = 74.0; // Default set temperature for auto mode
 float tempSwing = 1.0;
 float autoTempSwing = 3.0;
 bool autoChangeover = true;
@@ -139,6 +140,10 @@ void restoreDefaultSettings();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void sendMQTTData();
 void publishHomeAssistantDiscovery();
+void turnOffAllRelays();
+void activateHeating();
+void activateCooling();
+void handleFanControl();
 
 uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibration data
 
@@ -542,7 +547,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
 {
     if (x > 270 && x < 310 && y > 200 && y < 240)
     {
-        if (thermostatMode == "heat" || thermostatMode == "auto")
+        if (thermostatMode == "heat")
         {
             setTempHeat += 0.5;
             if (setTempHeat > 95) setTempHeat = 95;
@@ -566,13 +571,20 @@ void handleButtonPress(uint16_t x, uint16_t y)
             }
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
         }
+        else if (thermostatMode == "auto")
+        {
+            setTempAuto += 0.5;
+            if (setTempAuto > 95) setTempAuto = 95;
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempAuto", String(setTempAuto).c_str(), true);
+        }
         saveSettings();
         sendMQTTData();
         updateDisplay(currentTemp, currentHumidity);
     }
     else if (x > 0 && x < 40 && y > 200 && y < 240) // Adjusted coordinates for the "-" button
     {
-        if (thermostatMode == "heat" || thermostatMode == "auto")
+        if (thermostatMode == "heat")
         {
             setTempHeat -= 0.5;
             if (setTempHeat > 95) setTempHeat = 95;
@@ -595,6 +607,13 @@ void handleButtonPress(uint16_t x, uint16_t y)
                 if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
             }
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
+        }
+        else if (thermostatMode == "auto")
+        {
+            setTempAuto -= 0.5;
+            if (setTempAuto > 95) setTempAuto = 95;
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempAuto", String(setTempAuto).c_str(), true);
         }
         saveSettings();
         sendMQTTData();
@@ -779,6 +798,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             Serial.print("Updated cooling target temperature to: ");
             Serial.println(setTempCool);
         }
+        else if (thermostatMode == "auto" && newTargetTemp != setTempAuto)
+        {
+            setTempAuto = newTargetTemp;
+            Serial.print("Updated auto target temperature to: ");
+            Serial.println(setTempAuto);
+        }
         controlRelays(currentTemp); // Apply changes to relays
     }
 }
@@ -788,6 +813,8 @@ void sendMQTTData()
     static float lastTemp = 0.0;
     static float lastHumidity = 0.0;
     static float lastSetTempHeat = 0.0;
+    static float lastSetTempCool = 0.0;
+    static float lastSetTempAuto = 0.0; // Track last auto temp
     static String lastThermostatMode = "";
     static String lastFanMode = "";
 
@@ -807,16 +834,21 @@ void sendMQTTData()
             lastHumidity = currentHumidity;
         }
 
-        // Publish target temperature (set temperature for heating or cooling)
+        // Publish target temperature (set temperature for heating, cooling, or auto)
         if (thermostatMode == "heat" && setTempHeat != lastSetTempHeat)
         {
             mqttClient.publish("esp32_thermostat/target_temperature", String(setTempHeat).c_str(), true);
             lastSetTempHeat = setTempHeat;
         }
-        else if (thermostatMode == "cool" && setTempHeat != lastSetTempHeat)
+        else if (thermostatMode == "cool" && setTempCool != lastSetTempCool)
         {
             mqttClient.publish("esp32_thermostat/target_temperature", String(setTempCool).c_str(), true);
-            lastSetTempHeat = setTempCool;
+            lastSetTempCool = setTempCool;
+        }
+        else if (thermostatMode == "auto" && setTempAuto != lastSetTempAuto)
+        {
+            mqttClient.publish("esp32_thermostat/target_temperature", String(setTempAuto).c_str(), true);
+            lastSetTempAuto = setTempAuto;
         }
 
         // Publish thermostat mode
@@ -840,147 +872,93 @@ void sendMQTTData()
 
 void controlRelays(float currentTemp)
 {
+    // Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f\n", thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto);
+
     if (thermostatMode == "off")
     {
-        // Turn off all relays
-        digitalWrite(heatRelay1Pin, LOW);
-        digitalWrite(heatRelay2Pin, LOW);
-        digitalWrite(coolRelay1Pin, LOW);
-        digitalWrite(coolRelay2Pin, LOW);
-        digitalWrite(fanRelayPin, LOW);
-        heatingOn = false;
-        coolingOn = false;
-        fanOn = false;
+        turnOffAllRelays();
+        return;
     }
-    else if (autoChangeover)
+
+    if (thermostatMode == "heat")
     {
-        // Auto changeover logic
-        if (currentTemp < setTempHeat - autoTempSwing)
-        {
-            digitalWrite(heatRelay1Pin, HIGH); // First stage heat
-            heatingOn = true;
-            coolingOn = false;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp < setTempHeat - autoTempSwing - 1.0)
-            {
-                digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
-            }
-            else
-            {
-                digitalWrite(heatRelay2Pin, LOW);
-            }
-        }
-        else if (currentTemp > setTempCool + autoTempSwing)
-        {
-            digitalWrite(coolRelay1Pin, HIGH); // First stage cool
-            coolingOn = true;
-            heatingOn = false;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp > setTempCool + autoTempSwing + 1.0)
-            {
-                digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
-            }
-            else
-            {
-                digitalWrite(coolRelay2Pin, LOW);
-            }
-        }
-        else
-        {
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
-            digitalWrite(coolRelay1Pin, LOW);
-            digitalWrite(coolRelay2Pin, LOW);
-            heatingOn = false;
-            coolingOn = false;
-        }
-    }
-    else
-    {
-        // Heating logic
         if (currentTemp < setTempHeat - tempSwing)
         {
-            digitalWrite(heatRelay1Pin, HIGH); // First stage heat
-            heatingOn = true;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp < setTempHeat - tempSwing - 1.0)
-            {
-                digitalWrite(heatRelay2Pin, HIGH); // Second stage heat
-            }
-            else
-            {
-                digitalWrite(heatRelay2Pin, LOW);
-            }
+            activateHeating();
         }
         else
         {
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
-            heatingOn = false;
+            turnOffAllRelays();
         }
-
-        // Cooling logic
+    }
+    else if (thermostatMode == "cool")
+    {
         if (currentTemp > setTempCool + tempSwing)
         {
-            digitalWrite(coolRelay1Pin, HIGH); // First stage cool
-            coolingOn = true;
-            if (fanRelayNeeded)
-                digitalWrite(fanRelayPin, HIGH);
-            if (currentTemp > setTempCool + tempSwing + 1.0)
-            {
-                digitalWrite(coolRelay2Pin, HIGH); // Second stage cool
-            }
-            else
-            {
-                digitalWrite(coolRelay2Pin, LOW);
-            }
+            activateCooling();
         }
         else
         {
-            digitalWrite(coolRelay1Pin, LOW);
-            digitalWrite(coolRelay2Pin, LOW);
-            coolingOn = false;
+            turnOffAllRelays();
+        }
+    }
+    else if (thermostatMode == "auto")
+    {
+        if (currentTemp < setTempAuto - autoTempSwing)
+        {
+            activateHeating();
+        }
+        else if (currentTemp > setTempAuto + autoTempSwing)
+        {
+            activateCooling();
+        }
+        else
+        {
+            turnOffAllRelays();
         }
     }
 
-    // Fan logic
+    handleFanControl();
+    // Serial.printf("controlRelays result: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
+}
+
+void turnOffAllRelays()
+{
+    digitalWrite(heatRelay1Pin, LOW);
+    digitalWrite(heatRelay2Pin, LOW);
+    digitalWrite(coolRelay1Pin, LOW);
+    digitalWrite(coolRelay2Pin, LOW);
+    digitalWrite(fanRelayPin, LOW);
+    heatingOn = coolingOn = fanOn = false;
+}
+
+void activateHeating()
+{
+    digitalWrite(heatRelay1Pin, HIGH);
+    heatingOn = true;
+    coolingOn = false;
+    if (fanRelayNeeded) digitalWrite(fanRelayPin, HIGH);
+}
+
+void activateCooling()
+{
+    digitalWrite(coolRelay1Pin, HIGH);
+    coolingOn = true;
+    heatingOn = false;
+    if (fanRelayNeeded) digitalWrite(fanRelayPin, HIGH);
+}
+
+void handleFanControl()
+{
     if (fanMode == "on")
     {
-        digitalWrite(fanRelayPin, HIGH); // Turn on fan
+        digitalWrite(fanRelayPin, HIGH);
         fanOn = true;
     }
-    else if (fanMode == "auto")
+    else if (fanMode == "auto" && !heatingOn && !coolingOn)
     {
-        if (!heatingOn && !coolingOn)
-        {
-            digitalWrite(fanRelayPin, LOW); // Turn off fan if not needed
-            fanOn = false;
-        }
-    }
-    else if (fanMode == "cycle")
-    {
-        // Fan schedule will be handled in controlFanSchedule()
-        // Do not change fan relay here
-    }
-
-    // Hydronic heating logic
-    if (hydronicHeatingEnabled && heatingOn)
-    {
-        if (hydronicTemp < hydronicTempLow)
-        {
-            digitalWrite(fanRelayPin, LOW); // Turn off fan if hydronic temp is below low threshold
-            digitalWrite(heatRelay1Pin, LOW); // Turn off first stage heat
-            digitalWrite(heatRelay2Pin, LOW); // Turn off second stage heat
-        }
-        else if (hydronicTemp >= hydronicTempHigh)
-        {
-            digitalWrite(fanRelayPin, HIGH); // Turn on fan if hydronic temp is high threshold or above
-            digitalWrite(heatRelay1Pin, HIGH); // Turn on first stage heat
-            digitalWrite(heatRelay2Pin, HIGH); // Turn on second stage heat
-        }
+        digitalWrite(fanRelayPin, LOW);
+        fanOn = false;
     }
 }
 
@@ -1086,6 +1064,7 @@ void handleWebRequests()
         html += "</select><br>";
         html += "Set Temp Heat: <input type='text' name='setTempHeat' value='" + String(setTempHeat) + "'><br>";
         html += "Set Temp Cool: <input type='text' name='setTempCool' value='" + String(setTempCool) + "'><br>";
+        html += "Set Temp Auto: <input type='text' name='setTempAuto' value='" + String(setTempAuto) + "'><br>";
         html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
         html += "Auto Temp Swing: <input type='text' name='autoTempSwing' value='" + String(autoTempSwing) + "'><br>";
 //         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
@@ -1188,6 +1167,11 @@ void handleWebRequests()
             setTempCool = request->getParam("setTempCool", true)->value().toFloat();
             if (setTempCool < 50) setTempCool = 50;
             if (setTempCool > 95) setTempCool = 95;
+        }
+        if (request->hasParam("setTempAuto", true)) {
+            setTempAuto = request->getParam("setTempAuto", true)->value().toFloat();
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (setTempAuto > 95) setTempAuto = 95;
         }
         if (request->hasParam("tempSwing", true)) {
             tempSwing = request->getParam("tempSwing", true)->value().toFloat();
@@ -1326,6 +1310,7 @@ void handleWebRequests()
         response += "\"currentHumidity\": \"" + String(currentHumidity) + "\",";
         response += "\"setTempHeat\": \"" + String(setTempHeat) + "\",";
         response += "\"setTempCool\": \"" + String(setTempCool) + "\",";
+        response += "\"setTempAuto\": \"" + String(setTempAuto) + "\",";
         response += "\"tempSwing\": \"" + String(tempSwing) + "\",";
         response += "\"thermostatMode\": \"" + thermostatMode + "\",";
         response += "\"fanMode\": \"" + fanMode + "\"}";
@@ -1342,6 +1327,11 @@ void handleWebRequests()
             setTempCool = request->getParam("setTempCool", true)->value().toFloat();
             if (setTempCool < 50) setTempCool = 50;
             if (setTempCool > 95) setTempCool = 95;
+        }
+        if (request->hasParam("setTempAuto", true)) {
+            setTempAuto = request->getParam("setTempAuto", true)->value().toFloat();
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (setTempAuto > 95) setTempAuto = 95;
         }
         if (request->hasParam("tempSwing", true)) {
             tempSwing = request->getParam("tempSwing", true)->value().toFloat();
@@ -1464,7 +1454,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
     // Update set temperature only if it has changed and mode is not "off"
     if (thermostatMode != "off")
     {
-        float currentSetTemp = (thermostatMode == "heat" || thermostatMode == "auto") ? setTempHeat : setTempCool;
+        float currentSetTemp = (thermostatMode == "heat") ? setTempHeat : (thermostatMode == "cool") ? setTempCool : setTempAuto;
         if (currentSetTemp != previousSetTemp)
         {
             // Clear only the area that needs to be updated
@@ -1497,6 +1487,7 @@ void saveSettings()
     Serial.println("Saving settings:");
     Serial.print("setTempHeat: "); Serial.println(setTempHeat);
     Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("setTempAuto: "); Serial.println(setTempAuto);
     Serial.print("tempSwing: "); Serial.println(tempSwing);
     Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
     Serial.print("autoChangeover: "); Serial.println(autoChangeover);
@@ -1521,6 +1512,7 @@ void saveSettings()
 
     preferences.putFloat("setHeat", setTempHeat);
     preferences.putFloat("setCool", setTempCool);
+    preferences.putFloat("setAuto", setTempAuto);
     preferences.putFloat("swing", tempSwing);
     preferences.putFloat("autoSwing", autoTempSwing);
     preferences.putBool("autoChg", autoChangeover);
@@ -1553,6 +1545,7 @@ void loadSettings()
 {
     setTempHeat = preferences.getFloat("setHeat", 72.0);
     setTempCool = preferences.getFloat("setCool", 76.0);
+    setTempAuto = preferences.getFloat("setAuto", 74.0);
     tempSwing = preferences.getFloat("swing", 1.0);
     autoTempSwing = preferences.getFloat("autoSwing", 3.0);
     autoChangeover = preferences.getBool("autoChg", true);
@@ -1578,6 +1571,7 @@ void loadSettings()
     Serial.println("Loading settings:");
     Serial.print("setTempHeat: "); Serial.println(setTempHeat);
     Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("setTempAuto: "); Serial.println(setTempAuto);
     Serial.print("tempSwing: "); Serial.println(tempSwing);
     Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
     Serial.print("autoChangeover: "); Serial.println(autoChangeover);
@@ -1722,6 +1716,7 @@ void restoreDefaultSettings()
 {
     setTempHeat = 72.0;
     setTempCool = 76.0;
+    setTempAuto = 74.0;
     tempSwing = 1.0;
     autoTempSwing = 3.0;
     autoChangeover = true;
