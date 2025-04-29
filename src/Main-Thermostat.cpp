@@ -109,7 +109,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 
 // Add a preference for hostname
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
-String sw_version = "1.0.1"; // Default software version
+String sw_version = "1.0.2"; // Default software version
 
 
 bool heatingOn = false;
@@ -130,6 +130,10 @@ bool tempSwingChanged = false;
 bool thermostatModeChanged = false;
 bool fanModeChanged = false;
 bool handlingMQTTMessage = false; // Add this flag
+
+// Add declarations to support hydronic temperature display and sensor error checking
+float previousHydronicTemp = 0.0;
+bool ds18b20SensorPresent = false;
 
 // Function prototypes
 void setupWiFi();
@@ -218,18 +222,21 @@ void setup()
     
     // Setup WiFi if credentials exist, but don't block if it fails
     bool wifiConnected = false;
-    if (wifiSSID != "" && wifiPassword != "") {
+    if (wifiSSID != "" && wifiPassword != "")
+    {
         WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
         unsigned long startAttemptTime = millis();
         
         // Only try to connect for 5 seconds, allowing operation without WiFi
         Serial.println("Attempting to connect to WiFi...");
-        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 5000) {
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 5000)
+        {
             delay(500);
             Serial.print(".");
         }
         
-        if (WiFi.status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED)
+        {
             Serial.println("\nConnected to WiFi");
             wifiConnected = true;
             
@@ -237,14 +244,19 @@ void setup()
             handleWebRequests();
             server.begin();
             
-            if (mqttEnabled) {
+            if (mqttEnabled)
+            {
                 setupMQTT();
                 reconnectMQTT();
             }
-        } else {
+        }
+        else
+        {
             Serial.println("\nFailed to connect to WiFi. Will operate offline.");
         }
-    } else {
+    }
+    else
+    {
         Serial.println("No WiFi credentials found. Operating in offline mode.");
     }
     
@@ -254,7 +266,8 @@ void setup()
     drawButtons();
 
     // Initialize time from NTP server only if WiFi is connected
-    if (wifiConnected) {
+    if (wifiConnected)
+    {
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         setenv("TZ", timeZone.c_str(), 1);
         tzset();
@@ -269,6 +282,17 @@ void setup()
 
     // Initialize the DS18B20 sensor
     ds18b20.begin();
+    
+    // Check if DS18B20 sensor is present
+    ds18b20.requestTemperatures();
+    float tempC = ds18b20.getTempCByIndex(0);
+    ds18b20SensorPresent = (tempC != DEVICE_DISCONNECTED_C && tempC != -127.0);
+    
+    if (ds18b20SensorPresent) {
+        Serial.println("DS18B20 sensor detected");
+    } else {
+        Serial.println("DS18B20 sensor NOT detected");
+    }
 }
 
 void loop()
@@ -284,20 +308,23 @@ void loop()
     bool currentBootButtonState = digitalRead(BOOT_BUTTON) == LOW; // Boot button is active LOW
     
     // Detect boot button press
-    if (currentBootButtonState && !bootButtonPressed) {
+    if (currentBootButtonState && !bootButtonPressed)
+    {
         bootButtonPressed = true;
         bootButtonPressStart = millis();
         Serial.println("Boot button pressed, holding for factory reset...");
     }
     
     // Detect boot button release
-    if (!currentBootButtonState && bootButtonPressed) {
+    if (!currentBootButtonState && bootButtonPressed)
+    {
         bootButtonPressed = false;
         Serial.println("Boot button released");
     }
     
     // Check if boot button has been held long enough for factory reset
-    if (bootButtonPressed && (millis() - bootButtonPressStart > FACTORY_RESET_PRESS_TIME)) {
+    if (bootButtonPressed && (millis() - bootButtonPressStart > FACTORY_RESET_PRESS_TIME))
+    {
         Serial.println("Factory reset triggered by boot button!");
         
         // Show reset message on display
@@ -348,9 +375,20 @@ void loop()
             currentTemp = newTemp;
             currentHumidity = newHumidity;
             
-            // Read hydronic temperature
-            ds18b20.requestTemperatures();
-            hydronicTemp = ds18b20.getTempFByIndex(0);
+            // Read hydronic temperature with error handling
+            if (hydronicHeatingEnabled && ds18b20SensorPresent) {
+                ds18b20.requestTemperatures();
+                float newHydronicTemp = ds18b20.getTempFByIndex(0);
+                
+                // Check if we got a valid reading
+                if (newHydronicTemp != DEVICE_DISCONNECTED_F && newHydronicTemp != -127.0) {
+                    hydronicTemp = newHydronicTemp;
+                    Serial.printf("Hydronic temperature: %.1f F\n", hydronicTemp);
+                } else {
+                    Serial.println("Error reading from DS18B20 sensor");
+                    ds18b20SensorPresent = false;  // Mark sensor as no longer present
+                }
+            }
             
             // Control relays based on current temperature
             controlRelays(currentTemp);
@@ -647,22 +685,33 @@ void drawButtons()
     tft.print("-");
 
     // Draw the WiFi settings button between minus and mode buttons
-    tft.fillRect(50, 200, 70, 40, TFT_CYAN);
+    tft.fillRect(50, 200, 65, 40, TFT_CYAN);
     tft.setCursor(60, 215);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print("Setup");
 
     // Draw the thermostat mode button
-    tft.fillRect(130, 200, 60, 40, TFT_BLUE);
-    tft.setCursor(140, 215);
+    tft.fillRect(125, 200, 60, 40, TFT_BLUE);
+    tft.setCursor(133, 215);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
     tft.print(thermostatMode);
 
-    // Draw the fan mode button
-    tft.fillRect(200, 200, 60, 40, TFT_ORANGE);
-    tft.setCursor(210, 215);
+    // Draw the fan mode button - make it wider to fit "cycle"
+    tft.fillRect(195, 200, 65, 40, TFT_ORANGE);
+    
+    // Adjust text position based on fan mode to center it
+    int fanTextX = 210;
+    if (fanMode == "on") {
+        fanTextX = 215;
+    } else if (fanMode == "auto") {
+        fanTextX = 205;
+    } else if (fanMode == "cycle") {
+        fanTextX = 200;
+    }
+    
+    tft.setCursor(fanTextX, 215);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
     tft.print(fanMode);
@@ -838,11 +887,18 @@ void setupMQTT()
 
 void reconnectMQTT()
 {
-    while (!mqttClient.connected())
+    // Non-blocking approach - only try once per function call
+    if (!mqttClient.connected())
     {
-        Serial.print("Attempting MQTT connection...");
+        Serial.print("Attempting MQTT connection to server: ");
+        Serial.print(mqttServer);
+        Serial.print(" port: ");
+        Serial.print(mqttPort);
+        Serial.print(" username: ");
+        Serial.print(mqttUsername);
+        
         if (mqttClient.connect(hostname.c_str(), mqttUsername.c_str(), mqttPassword.c_str())) {
-            Serial.println("connected");
+            Serial.println(" - Connected successfully");
 
             // Subscribe to necessary topics
             mqttClient.subscribe("esp32_thermostat/target_temperature/set");
@@ -854,10 +910,30 @@ void reconnectMQTT()
         }
         else
         {
-            Serial.print("failed, rc=");
-            Serial.print(mqttClient.state());
-            Serial.println(" try again in 5 seconds");
-            delay(5000);
+            int mqttState = mqttClient.state();
+            Serial.print(" - Connection failed, rc=");
+            Serial.print(mqttState);
+            Serial.print(" (");
+            
+            // Provide human-readable error messages
+            switch(mqttState) {
+                case -4: Serial.print("MQTT_CONNECTION_TIMEOUT"); break;
+                case -3: Serial.print("MQTT_CONNECTION_LOST"); break;
+                case -2: Serial.print("MQTT_CONNECT_FAILED"); break;
+                case -1: Serial.print("MQTT_DISCONNECTED"); break;
+                case 1: Serial.print("MQTT_CONNECT_BAD_PROTOCOL"); break;
+                case 2: Serial.print("MQTT_CONNECT_BAD_CLIENT_ID"); break;
+                case 3: Serial.print("MQTT_CONNECT_UNAVAILABLE"); break;
+                case 4: Serial.print("MQTT_CONNECT_BAD_CREDENTIALS"); break;
+                case 5: Serial.print("MQTT_CONNECT_UNAUTHORIZED"); break;
+                default: Serial.print("UNKNOWN ERROR"); break;
+            }
+            
+            Serial.println(")");
+            Serial.print("Server: ");
+            Serial.print(mqttServer);
+            Serial.print(", Port: ");
+            Serial.println(mqttPort);
         }
     }
 }
@@ -935,6 +1011,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     Serial.print("] ");
     Serial.println(message);
 
+    // Set flag to indicate we're handling an MQTT message to prevent publish loops
+    handlingMQTTMessage = true;
+    bool settingsNeedSaving = false;
+
     if (String(topic) == "esp32_thermostat/mode/set")
     {
         if (message != thermostatMode)
@@ -942,6 +1022,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             thermostatMode = message;
             Serial.print("Updated thermostat mode to: ");
             Serial.println(thermostatMode);
+            settingsNeedSaving = true;
             controlRelays(currentTemp); // Apply changes to relays
         }
     }
@@ -952,6 +1033,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             fanMode = message;
             Serial.print("Updated fan mode to: ");
             Serial.println(fanMode);
+            settingsNeedSaving = true;
             controlRelays(currentTemp); // Apply changes to relays
         }
     }
@@ -963,21 +1045,33 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             setTempHeat = newTargetTemp;
             Serial.print("Updated heating target temperature to: ");
             Serial.println(setTempHeat);
+            settingsNeedSaving = true;
         }
         else if (thermostatMode == "cool" && newTargetTemp != setTempCool)
         {
             setTempCool = newTargetTemp;
             Serial.print("Updated cooling target temperature to: ");
             Serial.println(setTempCool);
+            settingsNeedSaving = true;
         }
         else if (thermostatMode == "auto" && newTargetTemp != setTempAuto)
         {
             setTempAuto = newTargetTemp;
             Serial.print("Updated auto target temperature to: ");
             Serial.println(setTempAuto);
+            settingsNeedSaving = true;
         }
         controlRelays(currentTemp); // Apply changes to relays
     }
+
+    // Save settings to flash if they were changed
+    if (settingsNeedSaving) {
+        Serial.println("Saving settings changed via MQTT");
+        saveSettings();
+    }
+
+    // Clear the handling flag
+    handlingMQTTMessage = false;
 }
 
 void sendMQTTData()
@@ -1044,54 +1138,108 @@ void sendMQTTData()
 
 void controlRelays(float currentTemp)
 {
-    // Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f\n", thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto);
+    // Add debugging information
+    Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f, swing=%.1f\n", 
+                 thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto, tempSwing);
 
-    if (thermostatMode == "off")
-    {
-        turnOffAllRelays();
+    // Check if temperature reading is valid
+    if (isnan(currentTemp)) {
+        Serial.println("WARNING: Invalid temperature reading, skipping relay control");
         return;
     }
 
+    if (thermostatMode == "off")
+    {
+        // Turn off heating and cooling relays, but don't turn off fan
+        // This allows the fan to operate in "on" or "cycle" mode even when thermostat is off
+        digitalWrite(heatRelay1Pin, LOW);
+        digitalWrite(heatRelay2Pin, LOW);
+        digitalWrite(coolRelay1Pin, LOW);
+        digitalWrite(coolRelay2Pin, LOW);
+        heatingOn = false;
+        coolingOn = false;
+        stage1Active = false;
+        stage2Active = false;
+        
+        // Handle fan separately based on fanMode
+        if (fanMode == "on") {
+            digitalWrite(fanRelayPin, HIGH);
+            fanOn = true;
+            Serial.println("Fan on while thermostat is off");
+        }
+        else if (fanMode == "auto") {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+        }
+        // Note: "cycle" fan mode is handled by controlFanSchedule()
+        
+        return;
+    }
+
+    // Rest of the thermostat logic for heat, cool, and auto modes
     if (thermostatMode == "heat")
     {
-        if (currentTemp < setTempHeat - tempSwing)
+        // Only activate heating if below setpoint - swing
+        if (currentTemp < (setTempHeat - tempSwing))
         {
+            Serial.printf("Activating heating: current %.1f < setpoint-swing %.1f\n", 
+                         currentTemp, (setTempHeat - tempSwing));
             activateHeating();
         }
-        else
+        // Only turn off if above setpoint (hysteresis)
+        else if (currentTemp >= setTempHeat)
         {
+            Serial.printf("Deactivating heating: current %.1f >= setpoint %.1f\n", 
+                         currentTemp, setTempHeat);
             turnOffAllRelays();
         }
+        // Otherwise maintain current state (hysteresis band)
     }
     else if (thermostatMode == "cool")
     {
-        if (currentTemp > setTempCool + tempSwing)
+        // Only activate cooling if above setpoint + swing
+        if (currentTemp > (setTempCool + tempSwing))
         {
+            Serial.printf("Activating cooling: current %.1f > setpoint+swing %.1f\n", 
+                         currentTemp, (setTempCool + tempSwing));
             activateCooling();
         }
-        else
+        // Only turn off if below setpoint (hysteresis)
+        else if (currentTemp <= setTempCool)
         {
+            Serial.printf("Deactivating cooling: current %.1f <= setpoint %.1f\n", 
+                         currentTemp, setTempCool);
             turnOffAllRelays();
         }
+        // Otherwise maintain current state (hysteresis band)
     }
     else if (thermostatMode == "auto")
     {
-        if (currentTemp < setTempAuto - autoTempSwing)
+        if (currentTemp < (setTempAuto - autoTempSwing))
         {
+            Serial.printf("Auto mode activating heating: current %.1f < auto_setpoint-swing %.1f\n", 
+                         currentTemp, (setTempAuto - autoTempSwing));
             activateHeating();
         }
-        else if (currentTemp > setTempAuto + autoTempSwing)
+        else if (currentTemp > (setTempAuto + autoTempSwing))
         {
+            Serial.printf("Auto mode activating cooling: current %.1f > auto_setpoint+swing %.1f\n", 
+                         currentTemp, (setTempAuto + autoTempSwing));
             activateCooling();
         }
         else
         {
+            Serial.printf("Auto mode temperature in deadband, turning off: %.1f is between %.1f and %.1f\n", 
+                         currentTemp, (setTempAuto - autoTempSwing), (setTempAuto + autoTempSwing));
             turnOffAllRelays();
         }
     }
 
+    // Make sure fan control is applied
     handleFanControl();
-    // Serial.printf("controlRelays result: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
+    
+    // Log final relay states
+    Serial.printf("Relay states: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
 }
 
 void turnOffAllRelays()
@@ -1115,6 +1263,7 @@ void activateHeating() {
             heatingOn = false;
             stage1Active = false;
             stage2Active = false;
+            Serial.println("Hydronics too cold, pausing heating");
             return;
         } else if (hydronicTemp >= hydronicTempHigh) {
             // Resume heating if hydronic temperature is high enough
@@ -1123,6 +1272,7 @@ void activateHeating() {
     }
 
     // Default heating behavior with hybrid staging
+    Serial.println("Activating heating relays"); // Debug message
     heatingOn = true;
     coolingOn = false;
     
@@ -1132,6 +1282,7 @@ void activateHeating() {
         stage1Active = true;
         stage1StartTime = millis(); // Record the start time
         stage2Active = false; // Ensure stage 2 is off initially
+        Serial.println("Stage 1 heating activated");
     } 
     // Check if it's time to activate stage 2 based on hybrid approach
     else if (!stage2Active && 
@@ -1140,14 +1291,21 @@ void activateHeating() {
              stage2HeatingEnabled) { // Check if stage 2 heating is enabled
         digitalWrite(heatRelay2Pin, HIGH); // Activate stage 2
         stage2Active = true;
+        Serial.println("Stage 2 heating activated");
     }
     
-    if (fanRelayNeeded) digitalWrite(fanRelayPin, HIGH);
+    // Control fan based on fanRelayNeeded setting
+    if (fanRelayNeeded) {
+        digitalWrite(fanRelayPin, HIGH);
+        fanOn = true;
+        Serial.println("Fan activated with heat");
+    }
 }
 
 void activateCooling()
 {
     // Default cooling behavior with hybrid staging
+    Serial.println("Activating cooling relays"); // Debug message
     coolingOn = true;
     heatingOn = false;
     
@@ -1157,6 +1315,7 @@ void activateCooling()
         stage1Active = true;
         stage1StartTime = millis(); // Record the start time
         stage2Active = false; // Ensure stage 2 is off initially
+        Serial.println("Stage 1 cooling activated");
     } 
     // Check if it's time to activate stage 2 based on hybrid approach
     else if (!stage2Active && 
@@ -1165,9 +1324,15 @@ void activateCooling()
             stage2CoolingEnabled) { // Check if stage 2 cooling is enabled
         digitalWrite(coolRelay2Pin, HIGH); // Activate stage 2
         stage2Active = true;
+        Serial.println("Stage 2 cooling activated");
     }
     
-    if (fanRelayNeeded) digitalWrite(fanRelayPin, HIGH);
+    // Control fan based on fanRelayNeeded setting
+    if (fanRelayNeeded) {
+        digitalWrite(fanRelayPin, HIGH);
+        fanOn = true;
+        Serial.println("Fan activated with cooling");
+    }
 }
 
 void handleFanControl()
@@ -1694,6 +1859,34 @@ void updateDisplay(float currentTemp, float currentHumidity)
         previousHumidity = currentHumidity;
     }
 
+    // Display hydronic temperature if enabled and sensor is present
+    static bool prevHydronicDisplayState = false;
+    
+    // Only update hydronic temp display if it's changed or display state has changed
+    // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
+    if (hydronicHeatingEnabled) {
+        if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
+            // Clear hydronic temperature area (now on right side under humidity)
+            tft.fillRect(240, 100, 80, 40, TFT_BLACK);
+            
+            // Display hydronic temperature on right side
+            tft.setTextSize(2);
+            tft.setCursor(240, 100); // Position below humidity
+            char hydronicTempStr[6];
+            dtostrf(hydronicTemp, 4, 1, hydronicTempStr);
+            tft.print(hydronicTempStr);
+            tft.println(useFahrenheit ? "F" : "C");
+            
+            previousHydronicTemp = hydronicTemp;
+            prevHydronicDisplayState = true;
+        }
+    } 
+    else if (prevHydronicDisplayState) {
+        // If hydronic heating is disabled or sensor not present, clear the area
+        tft.fillRect(240, 100, 80, 40, TFT_BLACK);
+        prevHydronicDisplayState = false;
+    }
+
     // Update set temperature only if it has changed and mode is not "off"
     if (thermostatMode != "off")
     {
@@ -1719,6 +1912,54 @@ void updateDisplay(float currentTemp, float currentHumidity)
     {
         // Clear the set temperature area if mode is "off"
         tft.fillRect(60, 100, 200, 40, TFT_BLACK);
+    }
+
+    // Add status indicators for heating, cooling, and fan
+    // Define an area for status indicators (above the buttons)
+    static bool prevHeatingStatus = false;
+    static bool prevCoolingStatus = false;
+    static bool prevFanStatus = false;
+    
+    // Check if status has changed and update only when necessary
+    if (heatingOn != prevHeatingStatus || coolingOn != prevCoolingStatus || fanOn != prevFanStatus)
+    {
+        // Clear the status indicator area
+        tft.fillRect(0, 150, 320, 30, TFT_BLACK);
+        
+        // Draw heat indicator if heating is on
+        if (heatingOn)
+        {
+            tft.fillRoundRect(10, 150, 90, 30, 5, TFT_RED);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(2);
+            tft.setCursor(25, 157);
+            tft.print("HEAT");
+        }
+        
+        // Draw cool indicator if cooling is on
+        if (coolingOn)
+        {
+            tft.fillRoundRect(115, 150, 90, 30, 5, TFT_BLUE);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(2);
+            tft.setCursor(130, 157);
+            tft.print("COOL");
+        }
+        
+        // Draw fan indicator if fan is on
+        if (fanOn)
+        {
+            tft.fillRoundRect(220, 150, 90, 30, 5, TFT_ORANGE);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(2);
+            tft.setCursor(240, 157);
+            tft.print("FAN");
+        }
+        
+        // Update previous status values
+        prevHeatingStatus = heatingOn;
+        prevCoolingStatus = coolingOn;
+        prevFanStatus = fanOn;
     }
 
     // Draw buttons at the bottom
