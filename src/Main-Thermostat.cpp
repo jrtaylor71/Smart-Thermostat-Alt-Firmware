@@ -37,6 +37,12 @@ const int SECONDS_PER_HOUR = 3600;
 const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
 #define DHTPIN 22 // Define the pin where the DHT11 is connected
 #define DHTTYPE DHT11 // Define the type of DHT sensor
+#define BOOT_BUTTON 0 // Define the GPIO pin connected to the boot button
+
+// Settings for factory reset
+unsigned long bootButtonPressStart = 0; // When the boot button was pressed
+const unsigned long FACTORY_RESET_PRESS_TIME = 10000; // 10 seconds in milliseconds
+bool bootButtonPressed = false; // Track if boot button is being pressed
 
 // DS18B20 sensor setup
 #define ONE_WIRE_BUS 27 // Define the pin where the DS18B20 is connected
@@ -103,7 +109,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 
 // Add a preference for hostname
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
-String sw_version = "1.0.0"; // Default software version
+String sw_version = "1.0.1"; // Default software version
 
 
 bool heatingOn = false;
@@ -172,10 +178,6 @@ void setup()
     preferences.begin("thermostat", false);
     loadSettings();
 
-    // Debug print to check if homeAssistantEnabled is loaded correctly
-    // Serial.print("Home Assistant Enabled: ");
-    // Serial.println(homeAssistantEnabled);
-
     // Initialize the DHT11 sensor
     dht.begin();
 
@@ -205,28 +207,62 @@ void setup()
     digitalWrite(coolRelay2Pin, LOW);
     digitalWrite(fanRelayPin, LOW);
 
-    // Setup WiFi
-    setupWiFi();
-
-    // Start the web server
-    handleWebRequests();
-    server.begin();
-
-    if (mqttEnabled) {
-        setupMQTT();
+    // Load WiFi credentials but don't force connection
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
+    hostname = preferences.getString("hostname", "ESP32-Simple-Thermostat");
+    WiFi.setHostname(hostname.c_str()); // Set the WiFi device name
+    
+    // Clear the "Loading Settings..." message
+    tft.fillScreen(TFT_BLACK);
+    
+    // Setup WiFi if credentials exist, but don't block if it fails
+    bool wifiConnected = false;
+    if (wifiSSID != "" && wifiPassword != "") {
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        unsigned long startAttemptTime = millis();
+        
+        // Only try to connect for 5 seconds, allowing operation without WiFi
+        Serial.println("Attempting to connect to WiFi...");
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 5000) {
+            delay(500);
+            Serial.print(".");
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nConnected to WiFi");
+            wifiConnected = true;
+            
+            // Only start web server and MQTT if connected
+            handleWebRequests();
+            server.begin();
+            
+            if (mqttEnabled) {
+                setupMQTT();
+                reconnectMQTT();
+            }
+        } else {
+            Serial.println("\nFailed to connect to WiFi. Will operate offline.");
+        }
+    } else {
+        Serial.println("No WiFi credentials found. Operating in offline mode.");
     }
+    
     lastInteractionTime = millis();
 
     // Initialize buttons
     drawButtons();
 
-    // Initialize time from NTP server
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    setenv("TZ", timeZone.c_str(), 1);
-    tzset();
+    // Initialize time from NTP server only if WiFi is connected
+    if (wifiConnected) {
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+        setenv("TZ", timeZone.c_str(), 1);
+        tzset();
+    }
 
-    // Add a delay before attempting to connect to WiFi
-    delay(5000);
+    // Read initial temperature and humidity
+    currentTemp = dht.readTemperature(useFahrenheit);
+    currentHumidity = dht.readHumidity();
 
     // Initial display update
     updateDisplay(currentTemp, currentHumidity);
@@ -240,25 +276,113 @@ void loop()
     static unsigned long lastWiFiAttemptTime = 0;
     static unsigned long lastMQTTAttemptTime = 0;
     static unsigned long lastDisplayUpdateTime = 0;
-    const unsigned long displayUpdateInterval = 1000; // Update display every 
+    static unsigned long lastSensorReadTime = 0;
+    const unsigned long displayUpdateInterval = 1000; // Update display every second
+    const unsigned long sensorReadInterval = 2000;    // Read sensors every 2 seconds
+
+    // Check boot button for factory reset
+    bool currentBootButtonState = digitalRead(BOOT_BUTTON) == LOW; // Boot button is active LOW
+    
+    // Detect boot button press
+    if (currentBootButtonState && !bootButtonPressed) {
+        bootButtonPressed = true;
+        bootButtonPressStart = millis();
+        Serial.println("Boot button pressed, holding for factory reset...");
+    }
+    
+    // Detect boot button release
+    if (!currentBootButtonState && bootButtonPressed) {
+        bootButtonPressed = false;
+        Serial.println("Boot button released");
+    }
+    
+    // Check if boot button has been held long enough for factory reset
+    if (bootButtonPressed && (millis() - bootButtonPressStart > FACTORY_RESET_PRESS_TIME)) {
+        Serial.println("Factory reset triggered by boot button!");
+        
+        // Show reset message on display
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.setCursor(10, 10);
+        tft.println("FACTORY RESET");
+        tft.setCursor(10, 40);
+        tft.println("Restoring defaults...");
+        tft.setCursor(10, 70);
+        tft.println("Please wait");
+        
+        delay(2000); // Show message for 2 seconds
+        
+        // Restore default settings and reboot
+        restoreDefaultSettings();
+        // ESP.restart() is called in restoreDefaultSettings()
+    }
 
     // Feed the watchdog timer
     esp_task_wdt_reset();
 
+    // Handle touch input with priority - check this first for responsiveness
+    uint16_t x, y;
+    if (tft.getTouch(&x, &y))
+    {
+        Serial.print("Touch detected at: ");
+        Serial.print(x);
+        Serial.print(", ");
+        Serial.println(y);
+        handleButtonPress(x, y);
+        handleKeyboardTouch(x, y, isUpperCaseKeyboard);
+        lastInteractionTime = millis();
+    }
+
+    // Read sensor data periodically rather than every loop
+    unsigned long currentTime = millis();
+    if (currentTime - lastSensorReadTime >= sensorReadInterval)
+    {
+        // Read temperature and humidity sensors
+        float newTemp = dht.readTemperature(useFahrenheit);
+        float newHumidity = dht.readHumidity();
+        
+        // Only update if readings are valid
+        if (!isnan(newTemp) && !isnan(newHumidity))
+        {
+            currentTemp = newTemp;
+            currentHumidity = newHumidity;
+            
+            // Read hydronic temperature
+            ds18b20.requestTemperatures();
+            hydronicTemp = ds18b20.getTempFByIndex(0);
+            
+            // Control relays based on current temperature
+            controlRelays(currentTemp);
+        }
+        
+        lastSensorReadTime = currentTime;
+    }
+
+    // Control fan based on schedule
+    controlFanSchedule();
+
+    // Update display at fixed interval
+    if (currentTime - lastDisplayUpdateTime > displayUpdateInterval)
+    {
+        updateDisplay(currentTemp, currentHumidity);
+        lastDisplayUpdateTime = currentTime;
+    }
+
     // Attempt to connect to WiFi if not connected
-    if (WiFi.status() != WL_CONNECTED && millis() - lastWiFiAttemptTime > 10000)
+    if (WiFi.status() != WL_CONNECTED && currentTime - lastWiFiAttemptTime > 10000)
     {
         connectToWiFi();
-        lastWiFiAttemptTime = millis();
+        lastWiFiAttemptTime = currentTime;
     }
     
     if (mqttEnabled)
     {
         // Attempt to reconnect to MQTT if not connected and WiFi is connected
-        if (WiFi.status() == WL_CONNECTED && !mqttClient.connected() && millis() - lastMQTTAttemptTime > 5000)
+        if (WiFi.status() == WL_CONNECTED && !mqttClient.connected() && currentTime - lastMQTTAttemptTime > 5000)
         {
             reconnectMQTT();
-            lastMQTTAttemptTime = millis();
+            lastMQTTAttemptTime = currentTime;
         }
         mqttClient.loop();
         sendMQTTData();
@@ -270,47 +394,6 @@ void loop()
             mqttClient.disconnect();
         }
     }
-
-    // Read sensor data if sensor is available
-    currentTemp = dht.readTemperature(useFahrenheit);
-    currentHumidity = dht.readHumidity();
-
-    if (!isnan(currentTemp) && !isnan(currentHumidity))
-    {
-        // Control relays based on current temperature
-        controlRelays(currentTemp);
-    }
-
-    // Control fan based on schedule
-    controlFanSchedule();
-
-    // Handle button presses
-    uint16_t x, y;
-    if (tft.getTouch(&x, &y))
-    {
-        Serial.print("Touch detected at: ");
-        Serial.print(x);
-        Serial.print(", ");
-        Serial.println(y);
-        handleButtonPress(x, y);
-        handleKeyboardTouch(x, y, isUpperCaseKeyboard);
-    }
-
-    // Update display periodically
-    if (millis() - lastDisplayUpdateTime > displayUpdateInterval)
-    {
-        updateDisplay(currentTemp, currentHumidity);
-        lastDisplayUpdateTime = millis();
-    }
-
-    // Control relays based on current temperature
-    controlRelays(currentTemp);
-
-    // Read hydronic temperature
-    ds18b20.requestTemperatures();
-    hydronicTemp = ds18b20.getTempFByIndex(0);
-
-    // delay(50); // Adjust delay as needed
 }
 
 void setupWiFi()
@@ -348,6 +431,44 @@ void setupWiFi()
         // No WiFi credentials found, prompt user to enter them via touch screen
         Serial.println("No WiFi credentials found. Please enter them via the touch screen.");
         enterWiFiCredentials();
+    }
+}
+
+void connectToWiFi()
+{
+    if (wifiSSID != "" && wifiPassword != "")
+    {
+        Serial.print("Connecting to WiFi with SSID: ");
+        Serial.println(wifiSSID);
+        Serial.print("Password: ");
+        Serial.println(wifiPassword);
+
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        unsigned long startAttemptTime = millis();
+
+        // Only try to connect for 10 seconds
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
+        {
+            delay(1000);
+            Serial.println("Connecting to WiFi...");
+        }
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            Serial.println("Connected to WiFi");
+        }
+        else
+        {
+            Serial.println("Failed to connect to WiFi");
+            // Don't enter WiFi credentials mode here, just return
+            // This allows the device to keep operating without WiFi
+        }
+    }
+    else
+    {
+        // Having no credentials is fine - don't trigger WiFi setup automatically
+        Serial.println("No WiFi credentials found. Device operating in offline mode.");
+        // Note: User can press the WiFi button on the display to configure WiFi if desired
     }
 }
 
@@ -525,6 +646,13 @@ void drawButtons()
     tft.setTextSize(2);
     tft.print("-");
 
+    // Draw the WiFi settings button between minus and mode buttons
+    tft.fillRect(50, 200, 70, 40, TFT_CYAN);
+    tft.setCursor(60, 215);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.print("Setup");
+
     // Draw the thermostat mode button
     tft.fillRect(130, 200, 60, 40, TFT_BLUE);
     tft.setCursor(140, 215);
@@ -550,11 +678,32 @@ void drawButtons()
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
     tft.print("MODE");
+
+    // Add "WIFI" label above the WiFi button
+    tft.setCursor(60, 180); // Positioned above the WiFi button
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("WIFI");
 }
 
 void handleButtonPress(uint16_t x, uint16_t y)
 {
-    if (x > 270 && x < 310 && y > 200 && y < 240)
+    // Add touch debounce mechanism to prevent accidental double touches
+    static unsigned long lastButtonPressTime = 0;
+    unsigned long currentTime = millis();
+    
+    // If less than 200ms has passed since the last button press, ignore this touch
+    // This is shorter than keyboard debounce to maintain responsiveness but prevent double triggers
+    if (currentTime - lastButtonPressTime < 200) {
+        return;
+    }
+    
+    lastButtonPressTime = currentTime;
+    
+    // Increase the touchable area slightly to make buttons easier to hit
+    
+    // "+" button
+    if (x > 265 && x < 315 && y > 195 && y < 245)
     {
         if (thermostatMode == "heat")
         {
@@ -589,9 +738,10 @@ void handleButtonPress(uint16_t x, uint16_t y)
         }
         saveSettings();
         sendMQTTData();
+        // Update display immediately for better responsiveness
         updateDisplay(currentTemp, currentHumidity);
     }
-    else if (x > 0 && x < 40 && y > 200 && y < 240) // Adjusted coordinates for the "-" button
+    else if (x > 0 && x < 45 && y > 195 && y < 245) // "-" button with slightly increased touch area
     {
         if (thermostatMode == "heat")
         {
@@ -626,9 +776,26 @@ void handleButtonPress(uint16_t x, uint16_t y)
         }
         saveSettings();
         sendMQTTData();
+        // Update display immediately for better responsiveness
         updateDisplay(currentTemp, currentHumidity);
     }
-    else if (x > 130 && x < 190 && y > 200 && y < 240)
+    else if (x > 45 && x < 125 && y > 195 && y < 245) // WiFi button with slightly increased touch area
+    {
+        // Handle WiFi setup button press
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.setCursor(10, 10);
+        tft.println("WiFi Setup");
+        
+        // Reset entering state to SSID first
+        inputText = "";
+        isEnteringSSID = true;
+        
+        // Draw keyboard for WiFi setup
+        drawKeyboard(isUpperCaseKeyboard);
+    }
+    else if (x > 125 && x < 195 && y > 195 && y < 245) // Mode button with slightly increased touch area
     {
         // Change thermostat mode
         if (thermostatMode == "auto")
@@ -642,9 +809,10 @@ void handleButtonPress(uint16_t x, uint16_t y)
 
         saveSettings();
         sendMQTTData();
+        // Update display immediately for better responsiveness
         updateDisplay(currentTemp, currentHumidity);
     }
-    else if (x > 200 && x < 260 && y > 200 && y < 240)
+    else if (x > 195 && x < 265 && y > 195 && y < 245) // Fan button with slightly increased touch area
     {
         // Change fan mode
         if (fanMode == "auto")
@@ -656,12 +824,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
 
         saveSettings();
         sendMQTTData();
-        updateDisplay(currentTemp, currentHumidity);
-    }
-    else
-    {
-        // Clear the display if touch is detected outside button areas
-        tft.fillScreen(TFT_BLACK);
+        // Update display immediately for better responsiveness
         updateDisplay(currentTemp, currentHumidity);
     }
 }
@@ -1332,8 +1495,8 @@ void handleWebRequests()
         sendMQTTData();
         publishHomeAssistantDiscovery(); // Publish discovery messages after saving settings
         String response = "<html><body><h1>Settings saved!</h1>";
-        response += "<p>Returning to the home page in 5 seconds...</p>";
-        response += "<script>setTimeout(function(){ window.location.href = '/'; }, 5000);</script>";
+        response += "<p>Returning to the settings page in 5 seconds...</p>";
+        response += "<script>setTimeout(function(){ window.location.href = '/settings'; }, 5000);</script>";
         response += "</body></html>";
         request->send(200, "text/html", response); });
 
@@ -1706,47 +1869,6 @@ void saveWiFiSettings()
     preferences.putString("wifiPassword", wifiPassword);
 }
 
-void connectToWiFi()
-{
-    if (wifiSSID != "" && wifiPassword != "")
-    {
-        Serial.print("Connecting to WiFi with SSID: ");
-        Serial.println(wifiSSID);
-        Serial.print("Password: ");
-        Serial.println(wifiPassword);
-
-        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-        unsigned long startAttemptTime = millis();
-
-        // Only try to connect for 10 seconds
-        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
-        {
-            delay(1000);
-            Serial.println("Connecting to WiFi...");
-        }
-
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            Serial.println("Connected to WiFi");
-        }
-        else
-        {
-            Serial.println("Failed to connect to WiFi");
-        }
-    }
-    else
-    {
-        // Code to accept WiFi credentials from touch screen or web interface.
-        Serial.println("No WiFi credentials found. Please enter them via the web interface.");
-        drawKeyboard(isUpperCaseKeyboard);
-        while (WiFi.status() != WL_CONNECTED)
-        {
-            delay(1000);
-            Serial.println("Waiting for WiFi credentials...");
-        }
-    }
-}
-
 void calibrateTouchScreen()
 {
     uint16_t calData[5];
@@ -1786,6 +1908,26 @@ void calibrateTouchScreen()
 
 void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
 {
+    // Add touch debounce mechanism to prevent accidental double touches
+    static unsigned long lastTouchTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Only relevant when the keyboard is actually shown
+    if (!isEnteringSSID && WiFi.status() == WL_CONNECTED) {
+        return;
+    }
+    
+    // If less than 300ms has passed since the last touch, ignore this touch
+    if (currentTime - lastTouchTime < 300) {
+        return;
+    }
+    
+    // Check if touch is within the keyboard area
+    if (y < 60) {  // Touch is above the keyboard, ignore
+        return;
+    }
+    
+    // Process touch within keyboard area
     for (int row = 0; row < 5; row++)
     {
         for (int col = 0; col < 10; col++)
@@ -1802,7 +1944,14 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
                 Serial.print(row);
                 Serial.print(", col: ");
                 Serial.println(col);
+                
+                // Process the key press with haptic feedback (a short delay)
                 handleKeyPress(row, col);
+                
+                // Update last touch time for debounce
+                lastTouchTime = currentTime;
+                
+                // Exit after processing a key press to prevent multiple key detection
                 return;
             }
         }
