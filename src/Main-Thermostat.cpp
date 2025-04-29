@@ -52,7 +52,7 @@ float hydronicTemp = 0.0;
 bool hydronicHeatingEnabled = false;
 
 // Hydronic heating settings
-float hydronicTempLow = 120.0; // Default low temperature for hydronic heating
+float hydronicTempLow = 110.0; // Default low temperature for hydronic heating
 float hydronicTempHigh = 130.0; // Default high temperature for hydronic heating
 
 // Hybrid staging settings
@@ -61,8 +61,8 @@ float stage2TempDelta = 2.0; // Default temperature delta for second stage activ
 unsigned long stage1StartTime = 0; // Time when stage 1 was activated
 bool stage1Active = false; // Flag to track if stage 1 is active
 bool stage2Active = false; // Flag to track if stage 2 is active
-bool stage2HeatingEnabled = true; // Enable/disable 2nd stage heating
-bool stage2CoolingEnabled = true; // Enable/disable 2nd stage cooling
+bool stage2HeatingEnabled = false; // Enable/disable 2nd stage heating
+bool stage2CoolingEnabled = false; // Enable/disable 2nd stage cooling
 
 // Globals
 DHT dht(DHTPIN, DHTTYPE);
@@ -103,8 +103,8 @@ bool use24HourClock = true; // Default to 24-hour clock
 // MQTT settings
 String mqttServer = "0.0.0.0"; // Replace with your MQTT server
 int mqttPort = 1883;                    // Replace with your MQTT port
-String mqttUsername = "your_username";  // Replace with your MQTT username
-String mqttPassword = "your_password";  // Replace with your MQTT password
+String mqttUsername = "mqtt";  // Replace with your MQTT username
+String mqttPassword = "password";  // Replace with your MQTT password
 String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standard Time)
 
 // Add a preference for hostname
@@ -2039,16 +2039,16 @@ void loadSettings()
     setTempCool = preferences.getFloat("setCool", 76.0);
     setTempAuto = preferences.getFloat("setAuto", 74.0);
     tempSwing = preferences.getFloat("swing", 1.0);
-    autoTempSwing = preferences.getFloat("autoSwing", 3.0);
+    autoTempSwing = preferences.getFloat("autoSwing", 1.5);
     autoChangeover = preferences.getBool("autoChg", true);
     fanRelayNeeded = preferences.getBool("fanRelay", false);
     useFahrenheit = preferences.getBool("useF", true);
     mqttEnabled = preferences.getBool("mqttEn", false);
     fanMinutesPerHour = preferences.getInt("fanMinHr", 15);
-    mqttServer = preferences.getString("mqttSrv", "192.168.183.238");
+    mqttServer = preferences.getString("mqttSrv", "0.0.0.0");
     mqttPort = preferences.getInt("mqttPrt", 1883);
-    mqttUsername = preferences.getString("mqttUsr", "your_username");
-    mqttPassword = preferences.getString("mqttPwd", "your_password");
+    mqttUsername = preferences.getString("mqttUsr", "mqtt");
+    mqttPassword = preferences.getString("mqttPwd", "password");
     wifiSSID = preferences.getString("wifiID", "");
     wifiPassword = preferences.getString("wifiPwd", "");
     thermostatMode = preferences.getString("thermoMd", "off");
@@ -2056,13 +2056,13 @@ void loadSettings()
     timeZone = preferences.getString("tz", "CST6CDT,M3.2.0,M11.1.0");
     use24HourClock = preferences.getBool("use24Clk", true);
     hydronicHeatingEnabled = preferences.getBool("hydHeat", false);
-    hydronicTempLow = preferences.getFloat("hydLow", 120.0);
+    hydronicTempLow = preferences.getFloat("hydLow", 110.0);
     hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
     hostname = preferences.getString("host", "ESP32-Simple-Thermostat");
     stage1MinRuntime = preferences.getUInt("stg1MnRun", 300);
     stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
-    stage2HeatingEnabled = preferences.getBool("stg2HeatEn", true);
-    stage2CoolingEnabled = preferences.getBool("stg2CoolEn", true);
+    stage2HeatingEnabled = preferences.getBool("stg2HeatEn", false);
+    stage2CoolingEnabled = preferences.getBool("stg2CoolEn", false);
     
     // Debug print to confirm settings are loaded
     Serial.println("Loading settings:");
@@ -2205,7 +2205,7 @@ void restoreDefaultSettings()
     setTempCool = 76.0;
     setTempAuto = 74.0;
     tempSwing = 1.0;
-    autoTempSwing = 3.0;
+    autoTempSwing = 1.5;
     autoChangeover = true;
     fanRelayNeeded = false;
     useFahrenheit = true;
@@ -2214,8 +2214,8 @@ void restoreDefaultSettings()
     wifiPassword = "";
     fanMinutesPerHour = 15;
     mqttServer = "0.0.0.0";
-    mqttUsername = "your_username";
-    mqttPassword = "your_password";
+    mqttUsername = "mqtt";
+    mqttPassword = "password";
     thermostatMode = "off";
     fanMode = "auto";
     timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Reset time zone to default
@@ -2224,10 +2224,10 @@ void restoreDefaultSettings()
     hostname = "ESP32-Simple-Thermostat"; // Reset hostname to default
 
     mqttPort = 1883; // Reset MQTT port default
-    hydronicTempLow = 120.0; // Reset hydronic low temp
+    hydronicTempLow = 110.0; // Reset hydronic low temp
     hydronicTempHigh = 130.0; // Reset hydronic high temp
-    stage2HeatingEnabled = true; // Reset stage 2 heating enabled to default
-    stage2CoolingEnabled = true; // Reset stage 2 cooling enabled to default
+    stage2HeatingEnabled = false; // Reset stage 2 heating enabled to default
+    stage2CoolingEnabled = false; // Reset stage 2 cooling enabled to default
 
     saveSettings();
 
