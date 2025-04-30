@@ -74,6 +74,9 @@ Preferences preferences; // Preferences instance
 String inputText = "";
 bool isEnteringSSID = true;
 
+// Add a new global flag to track WiFi setup mode
+bool inWiFiSetupMode = false;
+
 // GPIO pins for relays
 const int heatRelay1Pin = 13;
 const int heatRelay2Pin = 12;
@@ -109,7 +112,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 
 // Add a preference for hostname
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
-String sw_version = "1.0.2"; // Default software version
+String sw_version = "1.0.3"; // Default software version
 
 
 bool heatingOn = false;
@@ -356,10 +359,26 @@ void loop()
         Serial.print(x);
         Serial.print(", ");
         Serial.println(y);
+        
+        // Always handle button presses
         handleButtonPress(x, y);
-        handleKeyboardTouch(x, y, isUpperCaseKeyboard);
+        
+        // Only handle keyboard touches if we're in WiFi setup mode
+        if (inWiFiSetupMode) {
+            handleKeyboardTouch(x, y, isUpperCaseKeyboard);
+        }
+        
         lastInteractionTime = millis();
     }
+
+    // If in WiFi setup mode, skip the normal display updates and sensor readings
+    if (inWiFiSetupMode) {
+        // Only minimal processing in WiFi setup mode
+        delay(10); // Short delay to prevent CPU hogging
+        return;
+    }
+
+    // The rest of the loop function only runs when NOT in WiFi setup mode
 
     // Read sensor data periodically rather than every loop
     unsigned long currentTime = millis();
@@ -512,7 +531,16 @@ void connectToWiFi()
 
 void enterWiFiCredentials()
 {
+    // Make sure we clear the screen completely before drawing the keyboard
+    tft.fillScreen(TFT_BLACK);
+    
+    // Reset input text and set initial state to entering SSID
+    inputText = "";
+    isEnteringSSID = true;
+    
+    // Draw the keyboard with the screen freshly cleared
     drawKeyboard(isUpperCaseKeyboard);
+    
     while (WiFi.status() != WL_CONNECTED)
     {
         uint16_t x, y;
@@ -520,14 +548,24 @@ void enterWiFiCredentials()
         {
             handleKeyboardTouch(x, y, isUpperCaseKeyboard);
         }
-        delay(1000);
-        Serial.println("Waiting for WiFi credentials...");
+        delay(100); // Reduced delay for more responsive touch handling
+        
+        // Periodically print status message
+        static unsigned long lastStatusPrint = 0;
+        unsigned long currentTime = millis();
+        if (currentTime - lastStatusPrint > 5000) {
+            Serial.println("Waiting for WiFi credentials...");
+            lastStatusPrint = currentTime;
+        }
     }
 }
 
 void drawKeyboard(bool isUpperCaseKeyboard)
 {
+    // Clear the entire screen first to prevent any overlapping elements
     tft.fillScreen(TFT_BLACK);
+    
+    // Set text properties for the keyboard display
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2);
     tft.setCursor(0, 0);
@@ -749,6 +787,40 @@ void handleButtonPress(uint16_t x, uint16_t y)
     
     lastButtonPressTime = currentTime;
     
+    // WiFi setup button - should work even in WiFi setup mode to allow cancellation
+    if (x > 45 && x < 125 && y > 195 && y < 245) // WiFi button with slightly increased touch area
+    {
+        if (inWiFiSetupMode) {
+            // Cancel WiFi setup and return to main screen
+            inWiFiSetupMode = false;
+            tft.fillScreen(TFT_BLACK);
+            updateDisplay(currentTemp, currentHumidity);
+            drawButtons();
+            return;
+        }
+        
+        // Handle WiFi setup button press - enter WiFi setup mode
+        inWiFiSetupMode = true;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.setCursor(10, 10);
+        tft.println("WiFi Setup");
+        
+        // Reset entering state to SSID first
+        inputText = "";
+        isEnteringSSID = true;
+        
+        // Draw keyboard for WiFi setup
+        drawKeyboard(isUpperCaseKeyboard);
+        return;
+    }
+    
+    // If in WiFi setup mode, don't process other buttons
+    if (inWiFiSetupMode) {
+        return;
+    }
+    
     // Increase the touchable area slightly to make buttons easier to hit
     
     // "+" button
@@ -827,22 +899,6 @@ void handleButtonPress(uint16_t x, uint16_t y)
         sendMQTTData();
         // Update display immediately for better responsiveness
         updateDisplay(currentTemp, currentHumidity);
-    }
-    else if (x > 45 && x < 125 && y > 195 && y < 245) // WiFi button with slightly increased touch area
-    {
-        // Handle WiFi setup button press
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextSize(2);
-        tft.setCursor(10, 10);
-        tft.println("WiFi Setup");
-        
-        // Reset entering state to SSID first
-        inputText = "";
-        isEnteringSSID = true;
-        
-        // Draw keyboard for WiFi setup
-        drawKeyboard(isUpperCaseKeyboard);
     }
     else if (x > 125 && x < 195 && y > 195 && y < 245) // Mode button with slightly increased touch area
     {
@@ -2153,13 +2209,13 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
     static unsigned long lastTouchTime = 0;
     unsigned long currentTime = millis();
     
-    // Only relevant when the keyboard is actually shown
-    if (!isEnteringSSID && WiFi.status() == WL_CONNECTED) {
+    // If less than 300ms has passed since the last touch, ignore this touch
+    if (currentTime - lastTouchTime < 300) {
         return;
     }
     
-    // If less than 300ms has passed since the last touch, ignore this touch
-    if (currentTime - lastTouchTime < 300) {
+    // Only process keyboard touches if we're in WiFi setup mode
+    if (!inWiFiSetupMode) {
         return;
     }
     
@@ -2186,7 +2242,7 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
                 Serial.print(", col: ");
                 Serial.println(col);
                 
-                // Process the key press with haptic feedback (a short delay)
+                // Process the key press
                 handleKeyPress(row, col);
                 
                 // Update last touch time for debounce
