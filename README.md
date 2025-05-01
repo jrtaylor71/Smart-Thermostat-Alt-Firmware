@@ -37,4 +37,4 @@ const int fanRelayPin = 25;
 ![](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/web-settings.png)
 
 # Dev board
-![](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/IMG_20250501_151129758.jpg)
+![](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/IMG_20250501_151129758.png)
