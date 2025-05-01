@@ -1,6 +1,6 @@
 # ESP32-Simple-Thermostat
 
-ESP32 (Espressif WROOM-32 Developer Kit) based, using a DHT temperature/humidity sensor and ILI 9341 TFT LCD Touch display. Thermostat can be controlled by via MQTT (Home Assistant) or directly by touch on the LCD. Thermostat can operate without WiFi but limited to basic functions. Project is free to use, coded in C++, created in Visual Code with PlatfomIO IDE.
+ESP32 (Espressif WROOM-32 Developer Kit) based, using a DHT temperature/humidity sensor and ILI 9341 TFT LCD Touch display. Thermostat can be controlled by via MQTT (Home Assistant) or directly by touch on the LCD. Thermostat can operate without WiFi but limited to basic functions. Project is free to use and created in Visual Studio Code with PlatfomIO IDE.
 
 TFT Display is connected via these pins.
 ```
