@@ -188,4 +188,4 @@ Contributions welcome! Please:
 
 ---
 
-**Created with ❤️ for the DIY smart home community**
+**Created for the DIY smart home community**
