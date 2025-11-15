@@ -105,6 +105,9 @@ Automatic discovery and integration with Home Assistant:
 
 The project includes a complete custom PCB design:
 
+!(https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/ESP32-Simple-Thermostat-PCB/ESP32-Simple-Thermostat-PCB-top.png)
+!(https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/ESP32-Simple-Thermostat-PCB/ESP32-Simple-Thermostat-PCB-bottom.png)
+
 ### PCB Features
 - Professional 4-layer design
 - All components integrated on single board
