@@ -5,9 +5,7 @@ DHT11,U3,Aosong_DHT11_5.5x12.0_P2.54mm,,1
 2N2222A-TO92,Q3,TO-92_Inline_Wide_EBC,,1
 G5Q-1A,K6,Relay_SPST_Omron-G5Q-1A,,1
 Screw_Terminal_9_P3.50mm,J2,"TerminalBlock_Phoenix_PT-1,5-9-3.5-H_1x09_P3.50mm_Horizontal",,1
-MountingHole_M3_3.2mm_Pad,H7,MountingHole_3.2mm_Pad,,1
 1N4007,D4,D_DO-41_SOD81_P7.62mm_Horizontal,,1
-MountingHole_M3_3.2mm_Pad,H8,MountingHole_3.2mm_Pad,,1
 External Relays,J1,PinHeader_1x18_P2.54mm_Vertical,,1
 MountingHole_M3_3.2mm_Pad,H2,MountingHole_3.2mm_Pad,,1
 100nF_Ceramic,C6,C_Disc_D5.0mm_W2.5mm_P2.50mm,,1
@@ -17,7 +15,6 @@ MountingHole_M3_3.2mm_Pad,H2,MountingHole_3.2mm_Pad,,1
 1N4007,D2,D_DO-41_SOD81_P7.62mm_Horizontal,,1
 2N2222A-TO92,Q5,TO-92_Inline_Wide_EBC,,1
 G5Q-1A,K5,Relay_SPST_Omron-G5Q-1A,,1
-MountingHole_M3_3.2mm_Pad,H5,MountingHole_3.2mm_Pad,,1
 4.7k,R1,R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal,,1
 ESP32_DevKit_V1_DOIT_30GPIOs,A1,DOIT_ESP32_DEVKIT_30Pins,,1
 1N4007,D5,D_DO-41_SOD81_P7.62mm_Horizontal,,1
@@ -35,7 +32,6 @@ LM2596S-5,U2,TO-263-5_TabPin3,,1
 DS18B20,J3,PinHeader_1x03_P2.54mm_Vertical,,1
 1N4007,D6,D_DO-41_SOD81_P7.62mm_Horizontal,,1
 4.7k,R2,R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal,,1
-MountingHole_M3_3.2mm_Pad,H6,MountingHole_3.2mm_Pad,,1
 G5Q-1A,K4,Relay_SPST_Omron-G5Q-1A,,1
 G5Q-1A,K3,Relay_SPST_Omron-G5Q-1A,,1
 100nF_Ceramic,C9,C_Disc_D5.0mm_W2.5mm_P2.50mm,,1

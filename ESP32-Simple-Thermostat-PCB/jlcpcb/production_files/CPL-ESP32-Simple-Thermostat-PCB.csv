@@ -16,10 +16,6 @@ H1,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,25.0,-31.5,0.0,top
 H2,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,25.0,-114.0,0.0,top
 H3,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,151.0,-114.0,0.0,top
 H4,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,151.0,-31.5,0.0,top
-H5,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,68.0,-46.0,0.0,top
-H6,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,68.0,-90.5,0.0,top
-H7,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,151.0,-46.0,0.0,top
-H8,MountingHole_M3_3.2mm_Pad,MountingHole_3.2mm_Pad,151.0,-91.5,0.0,top
 J1,External Relays,PinHeader_1x18_P2.54mm_Vertical,95.81,-62.15,0.0,top
 J2,Screw_Terminal_9_P3.50mm,"TerminalBlock_Phoenix_PT-1,5-9-3.5-H_1x09_P3.50mm_Horizontal",33.5,-48.0,-90.0,top
 J3,DS18B20,PinHeader_1x03_P2.54mm_Vertical,33.0,-72.96,0.0,top
