@@ -193,7 +193,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.8"; // Software version
+const String sw_version = "1.0.9"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -2039,21 +2039,30 @@ void handleWebRequests()
                                        thermostatMode, fanMode, version_info, hostname, 
                                        useFahrenheit, hydronicHeatingEnabled,
                                        heatRelay1Pin, heatRelay2Pin, coolRelay1Pin, 
-                                       coolRelay2Pin, fanRelayPin);
+                                       coolRelay2Pin, fanRelayPin,
+                                       setTempHeat, setTempCool, setTempAuto,
+                                       tempSwing, autoTempSwing, autoChangeover,
+                                       fanRelayNeeded, stage1MinRuntime, 
+                                       stage2TempDelta, fanMinutesPerHour,
+                                       stage2HeatingEnabled, stage2CoolingEnabled,
+                                       hydronicTempLow, hydronicTempHigh,
+                                       wifiSSID, wifiPassword, timeZone,
+                                       use24HourClock, mqttEnabled, mqttServer,
+                                       mqttPort, mqttUsername, mqttPassword,
+                                       tempOffset, humidityOffset, currentBrightness,
+                                       displaySleepEnabled, displaySleepTimeout);
         request->send(200, "text/html", html);
     });
 
     server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = generateSettingsPage(thermostatMode, fanMode, setTempHeat, setTempCool, 
-                                         setTempAuto, tempSwing, autoTempSwing, fanRelayNeeded, 
-                                         useFahrenheit, mqttEnabled, stage1MinRuntime, 
-                                         stage2TempDelta, stage2HeatingEnabled, stage2CoolingEnabled,
-                                         hydronicHeatingEnabled, hydronicTempLow, hydronicTempHigh, 
-                                         fanMinutesPerHour, mqttServer, mqttPort, mqttUsername, 
-                                         mqttPassword, wifiSSID, wifiPassword, hostname, 
-                                         use24HourClock, timeZone, tempOffset, humidityOffset, 
-                                         displaySleepEnabled, displaySleepTimeout);
+        String html = generateSettingsPage(thermostatMode, fanMode, setTempHeat, setTempCool, setTempAuto, 
+                                          tempSwing, autoTempSwing, fanRelayNeeded, useFahrenheit, mqttEnabled, 
+                                          stage1MinRuntime, stage2TempDelta, stage2HeatingEnabled, stage2CoolingEnabled,
+                                          hydronicHeatingEnabled, hydronicTempLow, hydronicTempHigh, fanMinutesPerHour,
+                                          mqttServer, mqttPort, mqttUsername, mqttPassword, wifiSSID, wifiPassword,
+                                          hostname, use24HourClock, timeZone, tempOffset, humidityOffset, displaySleepEnabled,
+                                          displaySleepTimeout);
         request->send(200, "text/html", html);
     });
 
@@ -2196,15 +2205,22 @@ void handleWebRequests()
             timeoutMinutes = constrain(timeoutMinutes, 1UL, 60UL);
             displaySleepTimeout = timeoutMinutes * 60000; // Convert to milliseconds
         }
+        if (request->hasParam("currentBrightness", true)) {
+            currentBrightness = request->getParam("currentBrightness", true)->value().toInt();
+            // Constrain to reasonable range (30 to 255)
+            currentBrightness = constrain(currentBrightness, 30, 255);
+            setBrightness(currentBrightness); // Apply brightness immediately
+        }
+        if (request->hasParam("use24HourClock", true)) {
+            use24HourClock = request->getParam("use24HourClock", true)->value() == "on";
+        } else {
+            use24HourClock = false;
+        }
 
         saveSettings();
         sendMQTTData();
         publishHomeAssistantDiscovery(); // Publish discovery messages after saving settings
-        String response = "<html><body><h1>Settings saved!</h1>";
-        response += "<p>Returning to the settings page in 5 seconds...</p>";
-        response += "<script>setTimeout(function(){ window.location.href = '/settings'; }, 5000);</script>";
-        response += "</body></html>";
-        request->send(200, "text/html", response); });
+        request->send(200, "application/json", "{\"status\":\"success\",\"message\":\"Settings saved successfully!\"}"); });
 
     server.on("/set_heating", HTTP_POST, [](AsyncWebServerRequest *request)
               {
@@ -2320,8 +2336,7 @@ void handleWebRequests()
 
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = generateOTAPage();
-        request->send(200, "text/html", html);
+        request->redirect("/");
     });
 
     server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)

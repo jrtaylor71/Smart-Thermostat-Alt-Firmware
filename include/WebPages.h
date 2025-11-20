@@ -8,7 +8,19 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
                          String thermostatMode, String fanMode, String version_info, 
                          String hostname, bool useFahrenheit, bool hydronicHeatingEnabled,
                          int heatRelay1Pin, int heatRelay2Pin, int coolRelay1Pin, 
-                         int coolRelay2Pin, int fanRelayPin) {
+                         int coolRelay2Pin, int fanRelayPin,
+                         // Settings variables for embedded settings tab
+                         float setTempHeat, float setTempCool, float setTempAuto,
+                         float tempSwing, float autoTempSwing, bool autoChangeover,
+                         bool fanRelayNeeded, unsigned long stage1MinRuntime, 
+                         float stage2TempDelta, int fanMinutesPerHour,
+                         bool stage2HeatingEnabled, bool stage2CoolingEnabled,
+                         float hydronicTempLow, float hydronicTempHigh,
+                         String wifiSSID, String wifiPassword, String timeZone,
+                         bool use24HourClock, bool mqttEnabled, String mqttServer,
+                         int mqttPort, String mqttUsername, String mqttPassword,
+                         float tempOffset, float humidityOffset, int currentBrightness,
+                         bool displaySleepEnabled, unsigned long displaySleepTimeout) {
     
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
@@ -127,16 +139,279 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     
     html += "</div>"; // End status-content tab
     
-    // Settings tab content (placeholder)
+    // Settings tab content (embedded settings form)
     html += "<div id='settings-content' class='tab-content content' style='display: none;'>";
-    html += "<div class='status-card'>";
-    html += "<h3>Settings</h3>";
-    html += "<p>Settings interface will be loaded here...</p>";
+    html += "<form action='/set' method='POST' onsubmit='return handleSettingsSubmit(event);'>";
+    
+    // Basic Settings Section
+    html += "<div class='settings-section'>";
+    html += "<h3>Basic Settings</h3>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Thermostat Mode</label>";
+    html += "<select name='thermostatMode' class='form-select'>";
+    html += "<option value='off'" + String(thermostatMode == "off" ? " selected" : "") + ">Off</option>";
+    html += "<option value='heat'" + String(thermostatMode == "heat" ? " selected" : "") + ">Heat</option>";
+    html += "<option value='cool'" + String(thermostatMode == "cool" ? " selected" : "") + ">Cool</option>";
+    html += "<option value='auto'" + String(thermostatMode == "auto" ? " selected" : "") + ">Auto</option>";
+    html += "</select>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Fan Mode</label>";
+    html += "<select name='fanMode' class='form-select'>";
+    html += "<option value='auto'" + String(fanMode == "auto" ? " selected" : "") + ">Auto</option>";
+    html += "<option value='on'" + String(fanMode == "on" ? " selected" : "") + ">On</option>";
+    html += "<option value='cycle'" + String(fanMode == "cycle" ? " selected" : "") + ">Cycle</option>";
+    html += "</select>";
+    html += "</div>";
+    
+    html += "<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Heat Setpoint</label>";
+    html += "<input type='number' name='setTempHeat' value='" + String(setTempHeat, 1) + "' step='0.5' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Cool Setpoint</label>";
+    html += "<input type='number' name='setTempCool' value='" + String(setTempCool, 1) + "' step='0.5' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Auto Setpoint</label>";
+    html += "<input type='number' name='setTempAuto' value='" + String(setTempAuto, 1) + "' step='0.5' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Temperature Swing</label>";
+    html += "<input type='number' name='tempSwing' value='" + String(tempSwing, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Auto Temp Swing</label>";
+    html += "<input type='number' name='autoTempSwing' value='" + String(autoTempSwing, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + ">";
+    html += "<label class='form-label'>Auto Changeover</label>";
+    html += "</div>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + ">";
+    html += "<label class='form-label'>Fan Relay Required</label>";
+    html += "</div>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + ">";
+    html += "<label class='form-label'>Use Fahrenheit</label>";
+    html += "</div>";
+    
+    html += "</div>"; // End basic settings section
+    
+    // HVAC Advanced Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>HVAC Advanced Settings</h3>";
+    
+    html += "<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Stage 1 Min Runtime (seconds)</label>";
+    html += "<input type='number' name='stage1MinRuntime' value='" + String(stage1MinRuntime) + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Stage 2 Temp Delta</label>";
+    html += "<input type='number' name='stage2TempDelta' value='" + String(stage2TempDelta, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Fan Minutes Per Hour</label>";
+    html += "<input type='number' name='fanMinutesPerHour' value='" + String(fanMinutesPerHour) + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='stage2HeatingEnabled' " + String(stage2HeatingEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable 2nd Stage Heating</label>";
+    html += "</div>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='stage2CoolingEnabled' " + String(stage2CoolingEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable 2nd Stage Cooling</label>";
+    html += "</div>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='hydronicHeatingEnabled' " + String(hydronicHeatingEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Hydronic Heating Enabled</label>";
+    html += "</div>";
+    
+    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Hydronic Temp Low</label>";
+    html += "<input type='number' name='hydronicTempLow' value='" + String(hydronicTempLow, 1) + "' step='0.5' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Hydronic Temp High</label>";
+    html += "<input type='number' name='hydronicTempHigh' value='" + String(hydronicTempHigh, 1) + "' step='0.5' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "</div>"; // End HVAC settings section
+    
+    // Network & Connectivity Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>Network & Connectivity</h3>";
+    
+    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>WiFi SSID</label>";
+    html += "<input type='text' name='wifiSSID' value='" + wifiSSID + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>WiFi Password</label>";
+    html += "<input type='password' name='wifiPassword' value='" + wifiPassword + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Hostname</label>";
+    html += "<input type='text' name='hostname' value='" + hostname + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Time Zone</label>";
+    html += "<select name='timeZone' class='form-select'>";
+    html += "<option value='EST5EDT,M3.2.0,M11.1.0'" + String(timeZone == "EST5EDT,M3.2.0,M11.1.0" ? " selected" : "") + ">Eastern Time (EST/EDT)</option>";
+    html += "<option value='CST6CDT,M3.2.0,M11.1.0'" + String(timeZone == "CST6CDT,M3.2.0,M11.1.0" ? " selected" : "") + ">Central Time (CST/CDT)</option>";
+    html += "<option value='MST7MDT,M3.2.0,M11.1.0'" + String(timeZone == "MST7MDT,M3.2.0,M11.1.0" ? " selected" : "") + ">Mountain Time (MST/MDT)</option>";
+    html += "<option value='PST8PDT,M3.2.0,M11.1.0'" + String(timeZone == "PST8PDT,M3.2.0,M11.1.0" ? " selected" : "") + ">Pacific Time (PST/PDT)</option>";
+    html += "<option value='AKST9AKDT,M3.2.0,M11.1.0'" + String(timeZone == "AKST9AKDT,M3.2.0,M11.1.0" ? " selected" : "") + ">Alaska Time (AKST/AKDT)</option>";
+    html += "<option value='HST10'" + String(timeZone == "HST10" ? " selected" : "") + ">Hawaii Time (HST)</option>";
+    html += "<option value='GMT0BST,M3.5.0,M10.5.0'" + String(timeZone == "GMT0BST,M3.5.0,M10.5.0" ? " selected" : "") + ">UK Time (GMT/BST)</option>";
+    html += "<option value='CET-1CEST,M3.5.0,M10.5.0'" + String(timeZone == "CET-1CEST,M3.5.0,M10.5.0" ? " selected" : "") + ">Central Europe (CET/CEST)</option>";
+    html += "<option value='JST-9'" + String(timeZone == "JST-9" ? " selected" : "") + ">Japan Time (JST)</option>";
+    html += "<option value='AEST-10AEDT,M10.1.0,M4.1.0'" + String(timeZone == "AEST-10AEDT,M10.1.0,M4.1.0" ? " selected" : "") + ">Australia East (AEST/AEDT)</option>";
+    html += "</select>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='use24HourClock' " + String(use24HourClock ? "checked" : "") + ">";
+    html += "<label class='form-label'>Use 24-Hour Clock Format</label>";
+    html += "</div>";
+    
+    html += "</div>"; // End Network settings section
+    
+    // MQTT Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>MQTT Settings</h3>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable MQTT</label>";
+    html += "</div>";
+    
+    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>MQTT Server</label>";
+    html += "<input type='text' name='mqttServer' value='" + mqttServer + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>MQTT Port</label>";
+    html += "<input type='number' name='mqttPort' value='" + String(mqttPort) + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>MQTT Username</label>";
+    html += "<input type='text' name='mqttUsername' value='" + mqttUsername + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>MQTT Password</label>";
+    html += "<input type='password' name='mqttPassword' value='" + mqttPassword + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "</div>"; // End MQTT settings section
+    
+    // Sensor & Display Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>Sensor & Display Settings</h3>";
+    
+    html += "<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Temperature Offset (°F)</label>";
+    html += "<input type='number' name='tempOffset' value='" + String(tempOffset, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Humidity Offset (%)</label>";
+    html += "<input type='number' name='humidityOffset' value='" + String(humidityOffset, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Display Brightness (0-255)</label>";
+    html += "<input type='number' name='currentBrightness' value='" + String(currentBrightness) + "' min='30' max='255' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='displaySleepEnabled' " + String(displaySleepEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable Display Sleep</label>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Display Sleep Timeout (minutes)</label>";
+    html += "<input type='number' name='displaySleepTimeout' value='" + String(displaySleepTimeout / 60000) + "' class='form-input'>";
+    html += "</div;";
+    
+    html += "</div>"; // End sensor settings section
+    
+    // System Information
+    html += "<div class='settings-section'>";
+    html += "<h3>System Information</h3>";
+    html += "<div style='padding: 16px; background: var(--surface-color); border-radius: 8px; margin-bottom: 16px;'>";
+    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 0.9rem;'>";
+    html += "<div><strong>Firmware Version:</strong><br>" + version_info + "</div>";
+    html += "<div><strong>Hostname:</strong><br>" + hostname + "</div>";
+    html += "<div><strong>WiFi SSID:</strong><br>" + wifiSSID + "</div>";
+    html += "<div><strong>IP Address:</strong><br>" + WiFi.localIP().toString() + "</div>";
+    html += "</div>";
+    html += "</div>";
+    html += "</div>"; // End system info section
+    
+    // System Actions
+    html += "<div class='settings-section'>";
+    html += "<h3>System Actions</h3>";
     html += "<div class='button-group'>";
-    html += "<a href='/settings' class='btn btn-primary'>Open Settings</a>";
+    html += "<input type='submit' value='Save All Settings' class='btn btn-primary'>";
+    html += "<a href='/update' class='btn btn-secondary'>OTA Update</a>";
+    html += "<button type='button' onclick='confirmAction(\"reboot the system\", \"/reboot\")' class='btn btn-warning'>Reboot</button>";
+    html += "<a href='/confirm_restore' class='btn btn-danger'>Factory Reset</a>";
     html += "</div>";
-    html += "</div>";
-    html += "</div>";
+    html += "</div>"; // End system actions section
+    
+    html += "</form>";
+    html += "</div>"; // End settings-content tab
     
     // System tab content
     html += "<div id='system-content' class='tab-content content' style='display: none;'>";
@@ -319,13 +594,113 @@ String generateSettingsPage(String thermostatMode, String fanMode, float setTemp
     
     html += "</div>"; // End HVAC settings section
     
-    // The settings page continues but is getting long, so I'll add a "Load More" concept
-    // or split into multiple pages. For now, let's add save/navigation buttons
+    // Network & Connectivity Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>Network & Connectivity</h3>";
+    
+    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>WiFi SSID</label>";
+    html += "<input type='text' name='wifiSSID' value='" + wifiSSID + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>WiFi Password</label>";
+    html += "<input type='password' name='wifiPassword' value='" + wifiPassword + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Hostname</label>";
+    html += "<input type='text' name='hostname' value='" + hostname + "' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Time Zone</label>";
+    html += "<input type='text' name='timeZone' value='" + timeZone + "' class='form-input' placeholder='e.g., CST6CDT,M3.2.0,M11.1.0'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='use24HourClock' " + String(use24HourClock ? "checked" : "") + ">";
+    html += "<label class='form-label'>Use 24-Hour Clock Format</label>";
+    html += "</div>";
+    
+    html += "</div>"; // End Network settings section
+    
+    // MQTT Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>MQTT Settings</h3>";
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable MQTT</label>";
+    html += "</div>";
+    
+    if (mqttEnabled) {
+        html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px;'>";
+        
+        html += "<div class='form-group'>";
+        html += "<label class='form-label'>MQTT Server</label>";
+        html += "<input type='text' name='mqttServer' value='" + mqttServer + "' class='form-input'>";
+        html += "</div>";
+        
+        html += "<div class='form-group'>";
+        html += "<label class='form-label'>MQTT Port</label>";
+        html += "<input type='number' name='mqttPort' value='" + String(mqttPort) + "' class='form-input'>";
+        html += "</div>";
+        
+        html += "<div class='form-group'>";
+        html += "<label class='form-label'>MQTT Username</label>";
+        html += "<input type='text' name='mqttUsername' value='" + mqttUsername + "' class='form-input'>";
+        html += "</div>";
+        
+        html += "<div class='form-group'>";
+        html += "<label class='form-label'>MQTT Password</label>";
+        html += "<input type='password' name='mqttPassword' value='" + mqttPassword + "' class='form-input'>";
+        html += "</div>";
+        
+        html += "</div>"; // End grid
+    }
+    
+    html += "</div>"; // End MQTT settings section
+    
+    // Sensor & Display Settings
+    html += "<div class='settings-section'>";
+    html += "<h3>Sensor & Display Settings</h3>";
+    
+    html += "<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;'>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Temperature Offset (°F)</label>";
+    html += "<input type='number' name='tempOffset' value='" + String(tempOffset, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Humidity Offset (%)</label>";
+    html += "<input type='number' name='humidityOffset' value='" + String(humidityOffset, 1) + "' step='0.1' class='form-input'>";
+    html += "</div>";
+    
+    html += "</div>"; // End grid
+    
+    html += "<div class='form-checkbox'>";
+    html += "<input type='checkbox' name='displaySleepEnabled' " + String(displaySleepEnabled ? "checked" : "") + ">";
+    html += "<label class='form-label'>Enable Display Sleep</label>";
+    html += "</div>";
+    
+    if (displaySleepEnabled) {
+        html += "<div class='form-group'>";
+        html += "<label class='form-label'>Display Sleep Timeout (minutes)</label>";
+        html += "<input type='number' name='displaySleepTimeout' value='" + String(displaySleepTimeout / 60000) + "' class='form-input'>";
+        html += "</div>";
+    }
+    
+    html += "</div>"; // End sensor settings section
     
     html += "<div class='button-group'>";
-    html += "<input type='submit' value='Save Settings' class='btn btn-primary'>";
+    html += "<input type='submit' value='Save All Settings' class='btn btn-primary'>";
     html += "<a href='/' class='btn btn-secondary'>Back to Status</a>";
-    html += "<a href='/settings_advanced' class='btn btn-secondary'>Advanced Settings</a>";
     html += "</div>";
     
     html += "</form>";

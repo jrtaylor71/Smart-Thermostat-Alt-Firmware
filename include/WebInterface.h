@@ -314,6 +314,23 @@ body {
   padding-bottom: 8px;
 }
 
+.info-card {
+  background: #f5f5f5;
+  border-radius: var(--border-radius);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.info-card h4 {
+  margin-bottom: 12px;
+  color: var(--primary-color);
+}
+
+.info-card p {
+  margin-bottom: 8px;
+  color: var(--on-surface);
+}
+
 .button-group {
   display: flex;
   gap: 12px;
@@ -421,6 +438,14 @@ const char* ICON_SETTINGS = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="
 
 const char* ICON_WIFI = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,21L15.6,17.42C14.63,16.44 13.38,15.9 12,15.9C10.62,15.9 9.37,16.44 8.4,17.42L12,21M12,3C7.95,3 4.21,4.34 1.2,6.6L3,8.4C5.5,6.63 8.62,5.5 12,5.5C15.38,5.5 18.5,6.63 21,8.4L22.8,6.6C19.79,4.34 16.05,3 12,3M12,9C9.3,9 6.81,9.89 4.8,11.4L6.6,13.2C8.1,12.05 9.97,11.4 12,11.4C14.03,11.4 15.9,12.05 17.4,13.2L19.2,11.4C17.19,9.89 14.7,9 12,9Z"/></svg>)";
 
+const char* ICON_MODE = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12,6A6,6 0 0,0 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12A6,6 0 0,0 12,6Z"/></svg>)";
+
+const char* ICON_FAN = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C13,2 13.5,2.19 13.9,2.6L22.4,11.1C22.8,11.5 23,12 23,12.5C23,13 22.8,13.5 22.4,13.9L13.9,22.4C13.5,22.8 13,23 12.5,23C12,23 11.5,22.8 11.1,22.4L2.6,13.9C2.2,13.5 2,13 2,12.5C2,12 2.2,11.5 2.6,11.1L11.1,2.6C11.5,2.19 12,2 12.5,2Z"/></svg>)";
+
+const char* ICON_UPDATE = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/></svg>)";
+
+const char* ICON_RESET = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2C13.1,2 14,2.9 14,4C14,5.1 13.1,6 12,6C10.9,6 10,5.1 10,4C10,2.9 10.9,2 12,2M21,9V7L15,13L21,19V17H23V9H21M1,9V17H3V19L9,13L3,7V9H1Z"/></svg>)";
+
 // JavaScript for dynamic functionality
 const char* JAVASCRIPT_CODE = R"(
 <script>
@@ -508,9 +533,53 @@ function showAlert(message, type) {
     }, 5000);
 }
 
+function handleSettingsSubmit(event) {
+    event.preventDefault();
+    
+    const form = event.target;
+    const formData = new FormData(form);
+    const submitBtn = form.querySelector('input[type="submit"]');
+    
+    // Show loading state
+    const originalValue = submitBtn.value;
+    submitBtn.value = 'Saving...';
+    submitBtn.disabled = true;
+    
+    fetch('/set', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showAlert(data.message, 'success');
+            // Optional: refresh the page to show updated values
+            setTimeout(() => {
+                location.reload();
+            }, 2000);
+        } else {
+            showAlert('Error saving settings: ' + (data.message || 'Unknown error'), 'error');
+        }
+    })
+    .catch(error => {
+        showAlert('Error saving settings: ' + error.message, 'error');
+    })
+    .finally(() => {
+        // Restore button state
+        submitBtn.value = originalValue;
+        submitBtn.disabled = false;
+    });
+    
+    return false;
+}
+
 // Initialize the interface when page loads
 document.addEventListener('DOMContentLoaded', function() {
-    showTab('status');
+    // Check URL parameters for tab switching
+    const urlParams = new URLSearchParams(window.location.search);
+    const tabParam = urlParams.get('tab');
+    const initialTab = tabParam && ['status', 'settings', 'system'].includes(tabParam) ? tabParam : 'status';
+    showTab(initialTab);
     
     // Add form validation
     const forms = document.querySelectorAll('form');
