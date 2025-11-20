@@ -1,6 +1,14 @@
-# ESP32 Smart Thermostat
+# ESP32 Smart Thermostat - Alternative Firmware
 
 A comprehensive, feature-rich smart thermostat system built on the ESP32 platform with professional PCB design. Perfect for DIY smart home automation with full Home Assistant integration.
+
+## 🏗️ Hardware Credits
+
+This project is **alternative firmware** for the excellent smart-thermostat hardware designed by **Stefan Meisner**.
+
+**Original Hardware Project**: https://github.com/smeisner/smart-thermostat
+
+We use Stefan's hardware design and provide an enhanced firmware implementation with advanced features including multi-core architecture, centralized display management, and comprehensive Home Assistant integration.
 
 ![Thermostat Display](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/IMG_20250501_151129758.png)
 
@@ -179,12 +187,20 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.0.3
-- Complete thermostat functionality
-- MQTT/Home Assistant integration
-- Professional PCB design
-- Multi-stage HVAC support
+**Current Version**: 1.0.5
+- Complete thermostat functionality with Option C display system
+- Enhanced MQTT/Home Assistant integration with temperature precision
+- Professional PCB design (hardware by Stefan Meisner)
+- Multi-stage HVAC support with intelligent staging
 - Web interface and OTA updates
+- Dual-core FreeRTOS architecture for ESP32-S3
+
+## 🙏 Credits & Acknowledgments
+
+**Hardware Design**: Stefan Meisner - [smart-thermostat](https://github.com/smeisner/smart-thermostat)  
+**Alternative Firmware**: Jonn Taylor - Enhanced firmware implementation
+
+This project demonstrates the power of open-source collaboration - combining excellent hardware design with advanced firmware capabilities.
 
 ---
 

@@ -1,5 +1,17 @@
 /*
- * This file is part of ESP32-Simple-Thermostat.
+ * ESP32-Simple-Thermostat - Alternative Firmware
+ * 
+ * This is alternative firmware for the smart-thermostat hardware project.
+ * Original hardware design by Stefan Meisner:
+ * https://github.com/smeisner/smart-thermostat
+ *
+ * This firmware implementation provides enhanced features including:
+ * - Option C centralized display management with FreeRTOS tasks
+ * - Advanced multi-stage HVAC control with intelligent staging
+ * - Home Assistant integration with proper temperature precision
+ * - Comprehensive MQTT support with auto-discovery
+ * - Web-based configuration interface
+ * - Professional dual-core architecture for ESP32-S3
  *
  * ESP32-Simple-Thermostat is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +27,14 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Copyright (c) 2025 Jonn Taylor (jrtaylor@taylordatacom.com) */
+/* 
+ * Alternative Firmware Implementation
+ * Copyright (c) 2025 Jonn Taylor (jrtaylor@taylordatacom.com)
+ * 
+ * Hardware Design Credits:
+ * Original smart-thermostat hardware by Stefan Meisner
+ * https://github.com/smeisner/smart-thermostat
+ */
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
