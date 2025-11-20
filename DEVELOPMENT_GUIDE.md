@@ -1,6 +1,6 @@
-# ESP32 Simple Thermostat - Development Guide
+# Smart Thermostat Alt Firmware - Development Guide
 
-This guide helps developers understand, modify, and extend the ESP32 Simple Thermostat project.
+This guide helps developers understand, modify, and extend the Smart Thermostat Alt Firmware project.
 
 ## 🎯 Development Environment Setup
 
@@ -14,7 +14,7 @@ This guide helps developers understand, modify, and extend the ESP32 Simple Ther
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd ESP32-Simple-Thermostat
+cd Smart-Thermostat-Alt-Firmware
 
 # Open in VS Code
 code .
@@ -487,4 +487,4 @@ String sw_version = "1.0.4";  // Increment for releases
 // Tag git repository: git tag v1.0.4
 ```
 
-This development guide provides the foundation for extending and maintaining the ESP32 Simple Thermostat project. Follow these patterns and practices to ensure code quality and system reliability.
+This development guide provides the foundation for extending and maintaining the Smart Thermostat Alt Firmware project. Follow these patterns and practices to ensure code quality and system reliability.

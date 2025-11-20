@@ -1,4 +1,4 @@
-# ESP32 Smart Thermostat - Alternative Firmware
+# Smart Thermostat Alt Firmware
 
 A comprehensive, feature-rich smart thermostat system built on the ESP32 platform with professional PCB design. Perfect for DIY smart home automation with full Home Assistant integration.
 

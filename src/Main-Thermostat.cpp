@@ -13,12 +13,12 @@
  * - Web-based configuration interface
  * - Professional dual-core architecture for ESP32-S3
  *
- * ESP32-Simple-Thermostat is free software: you can redistribute it and/or modify
+ * Smart Thermostat Alt Firmware is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * ESP32-Simple-Thermostat is distributed in the hope that it will be useful,
+ * Smart Thermostat Alt Firmware is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -188,7 +188,7 @@ String mqttPassword = "password";  // Replace with your MQTT password
 String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standard Time)
 
 // Add a preference for hostname
-String hostname = "ESP32-Simple-Thermostat"; // Default hostname
+String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
 const String sw_version = "1.0.8"; // Software version
@@ -2034,7 +2034,7 @@ void handleWebRequests()
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
     {
         String html = "<html><head><meta http-equiv='refresh' content='10'></head><body>"; // Changed refresh time to 10 seconds
-        html += "<h1>ESP32 Simple Thermostat</h1>";
+        html += "<h1>Smart Thermostat Alt Firmware</h1>";
         html += "<h2>Status</h2>";
         html += "<p><strong>Firmware Version:</strong> " + version_info + "</p>";
         html += "<p><strong>Device Hostname:</strong> " + hostname + "</p>";
@@ -2757,7 +2757,7 @@ void loadSettings()
     hydronicHeatingEnabled = preferences.getBool("hydHeat", false);
     hydronicTempLow = preferences.getFloat("hydLow", 110.0);
     hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
-    hostname = preferences.getString("host", "ESP32-Simple-Thermostat");
+    hostname = preferences.getString("host", "Smart-Thermostat-Alt");
     stage1MinRuntime = preferences.getUInt("stg1MnRun", 300);
     stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
     stage2HeatingEnabled = preferences.getBool("stg2HeatEn", false);
@@ -2947,7 +2947,7 @@ void restoreDefaultSettings()
     timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Reset time zone to default
     use24HourClock = true; // Reset clock format to default
     hydronicHeatingEnabled = false; // Reset hydronic heating setting to default
-    hostname = "ESP32-Simple-Thermostat"; // Reset hostname to default
+    hostname = "Smart-Thermostat-Alt"; // Reset hostname to default
 
     mqttPort = 1883; // Reset MQTT port default
     hydronicTempLow = 110.0; // Reset hydronic low temp

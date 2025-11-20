@@ -1,8 +1,8 @@
-# ESP32 Simple Thermostat - Complete Documentation
+# Smart Thermostat Alt Firmware - Complete Documentation
 
 ## Project Overview
 
-The ESP32 Simple Thermostat is a comprehensive, feature-rich smart thermostat system built on the ESP32 platform. It combines local touch control with remote MQTT/Home Assistant integration, making it suitable for both standalone operation and smart home environments.
+The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32 platform. It combines local touch control with remote MQTT/Home Assistant integration, making it suitable for both standalone operation and smart home environments.
 
 ### Key Features
 
@@ -400,6 +400,6 @@ This project is released under the GNU General Public License v3.0. You are free
 
 ## Conclusion
 
-The ESP32 Simple Thermostat represents a complete, professional-grade smart thermostat solution. With its combination of local control, smart home integration, and advanced HVAC features, it provides a cost-effective alternative to commercial smart thermostats while offering superior customization and control options.
+The Smart Thermostat Alt Firmware represents a complete, professional-grade smart thermostat solution. With its combination of local control, smart home integration, and advanced HVAC features, it provides a cost-effective alternative to commercial smart thermostats while offering superior customization and control options.
 
 The addition of the custom PCB elevates this from a prototype to a production-ready solution suitable for permanent installation in residential and commercial environments.

@@ -1,4 +1,4 @@
-// Custom User_Setup.h for ESP32-S3 Simple Thermostat
+// Custom User_Setup.h for Smart Thermostat Alt Firmware
 // Based on Setup70b_ESP32_S3_ILI9341.h but with custom pins
 
 #define USER_SETUP_ID 70
