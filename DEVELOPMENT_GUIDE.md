@@ -2,13 +2,24 @@
 
 This guide helps developers understand, modify, and extend the Smart Thermostat Alt Firmware project.
 
+## 🎯 Project Architecture Overview
+
+### Current Implementation Status
+- **Version**: 1.0.8 (November 2025)
+- **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
+- **Display**: ILI9341 320x240 TFT with XPT2046 touch controller
+- **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp)
+- **Architecture**: Dual-core FreeRTOS with Option C centralized display management
+- **Memory Usage**: ~3.14MB flash (30.3% utilization with huge_app.csv partition)
+
 ## 🎯 Development Environment Setup
 
 ### Prerequisites
 - **VS Code** with PlatformIO extension
 - **Git** for version control
-- **KiCad 6.0+** for PCB modifications (optional)
 - **MQTT Client** for testing (MQTT.fx, MQTT Explorer, etc.)
+- **ESP32-S3 Development Board** or custom PCB
+- **Serial Monitor** for debugging (115200 baud)
 
 ### Initial Setup
 ```bash
@@ -26,13 +37,45 @@ code .
 ```
 
 ### Hardware Setup for Development
-1. **ESP32 Development Board**: Any ESP32 WROOM-32 compatible board
-2. **ILI9341 TFT Display**: 320x240 with touch (SPI interface)
-3. **DHT11 Sensor**: For temperature/humidity testing
-4. **Breadboard/Jumper Wires**: For prototyping connections
-5. **5V Relay Module**: For HVAC simulation (optional)
+1. **ESP32-S3-WROOM-1-N16**: Main microcontroller with 16MB flash
+2. **ILI9341 TFT Display with XPT2046**: 320x240 SPI display with resistive touch
+3. **AHT20 Sensor**: I2C temperature/humidity sensor
+4. **DS18B20 Sensor**: OneWire water temperature sensor (optional)
+5. **5x Relay Module**: For HVAC control simulation
+6. **Custom PCB**: Professional PCB design by Stefan Meisner (recommended)
+7. **Development Breadboard**: For prototyping connections
 
 ## 🏗️ Code Architecture
+
+### Dual-Core FreeRTOS Architecture
+
+The system uses ESP32-S3's dual-core architecture for optimal performance:
+- **Core 0**: Main loop, display updates, web server, MQTT
+- **Core 1**: Sensor reading task, HVAC control logic
+
+```cpp
+// Core 1: Sensor task for responsive control
+void sensorTaskFunction(void *parameter) {
+    for (;;) {
+        // Read sensors every 5 seconds
+        sensors_event_t humidity, temp;
+        aht.getEvent(&humidity, &temp);
+        // Control HVAC relays
+        controlRelays(newTemp);
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
+}
+
+// Core 0: Centralized display update task (Option C)
+void displayUpdateTaskFunction(void* parameter) {
+    for (;;) {
+        if (displayUpdateRequired) {
+            updateDisplayIndicators();
+        }
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+}
+```
 
 ### Main Components
 
@@ -44,6 +87,18 @@ bool coolingOn = false;
 bool fanOn = false;
 String thermostatMode = "off";    // "off", "heat", "cool", "auto"
 String fanMode = "auto";          // "auto", "on", "cycle"
+
+// Multi-stage control flags
+bool stage1Active = false;
+bool stage2Active = false;
+bool stage2HeatingEnabled = false;
+bool stage2CoolingEnabled = false;
+
+// Hydronic heating support
+float hydronicTemp = 0.0;
+bool hydronicHeatingEnabled = false;
+float hydronicTempLow = 110.0;
+float hydronicTempHigh = 130.0;
 ```
 
 #### Settings Persistence Pattern

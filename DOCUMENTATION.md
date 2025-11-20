@@ -2,19 +2,29 @@
 
 ## Project Overview
 
-The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32 platform. It combines local touch control with remote MQTT/Home Assistant integration, making it suitable for both standalone operation and smart home environments.
+The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32-S3 platform with professional PCB design. This alternative firmware for Stefan Meisner's smart-thermostat hardware provides enhanced features including dual-core architecture, centralized display management, and advanced multi-stage HVAC control.
+
+**Current Version**: 1.0.8 (November 2025)
+**Hardware**: ESP32-S3-WROOM-1-N16 (16MB Flash)
+**Architecture**: Dual-core FreeRTOS with Option C display management
+**Status**: Production-ready with comprehensive testing
 
 ### Key Features
 
-- **Local Touch Control**: ILI9341 TFT LCD touch screen for direct thermostat operation
-- **Smart Home Integration**: Full MQTT support with Home Assistant auto-discovery
-- **Dual Sensor Support**: DHT11 for ambient temperature/humidity and DS18B20 for hydronic heating
-- **Multi-Stage HVAC Control**: Support for 2-stage heating and cooling systems
-- **Flexible Operation Modes**: Heat, Cool, Auto, and Off modes with configurable temperature swings
-- **Advanced Fan Control**: Auto, On, and Cycle modes with scheduled operation
-- **Web Interface**: Complete web-based configuration and monitoring
-- **Offline Operation**: Full functionality without WiFi connection
-- **Custom PCB**: Professional PCB design for clean installation
+- **Professional Dual-Core Architecture**: ESP32-S3 FreeRTOS with Core 0 for UI/networking, Core 1 for control
+- **Local Touch Control**: ILI9341 TFT LCD with resistive touch and adaptive brightness
+- **Smart Home Integration**: Full MQTT support with Home Assistant auto-discovery and precision temperature control
+- **Advanced Sensor Suite**: AHT20 I2C sensor for ambient conditions, DS18B20 OneWire for hydronic systems
+- **Intelligent Multi-Stage HVAC**: 2-stage heating/cooling with hybrid time/temperature staging logic
+- **Hydronic Heating Support**: Water temperature monitoring with safety interlocks
+- **Flexible Operation Modes**: Heat, Cool, Auto, and Off with configurable temperature swings
+- **Advanced Fan Control**: Auto, On, and Cycle modes with scheduled operation (minutes per hour)
+- **Comprehensive Web Interface**: Real-time monitoring and complete configuration
+- **Robust Offline Operation**: Full functionality without WiFi connection
+- **Custom PCB Design**: Professional PCB by Stefan Meisner for clean installation
+- **Modern UI**: Material Design color scheme with responsive touch interface
+- **Factory Reset**: 10-second boot button press for complete settings reset
+- **OTA Updates**: Over-the-air firmware updates via web interface
 
 ## Hardware Components
 
@@ -29,32 +39,46 @@ The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermos
 
 #### TFT Display Connections (ILI9341 + XPT2046)
 ```cpp
+// Current platformio.ini build_flags configuration:
 #define TFT_MISO 21    // SPI MISO (shared with touch)
 #define TFT_MOSI 12    // SPI MOSI (shared with touch)
 #define TFT_SCLK 13    // SPI Clock (shared with touch)  
 #define TFT_CS    9    // TFT Chip Select
 #define TFT_DC   11    // Data/Command
 #define TFT_RST  10    // Reset
-#define TFT_BL   14    // Backlight
+#define TFT_BL   14    // Backlight (PWM controlled)
 #define TOUCH_CS 47    // Touch Chip Select
 #define TOUCH_IRQ 48   // Touch Interrupt
 ```
 
 #### Sensor Connections
 ```cpp
+// AHT20 I2C sensor (ESP32-S3 pins)
 #define AHT20_SDA 36        // I2C SDA for AHT20
 #define AHT20_SCL 35        // I2C SCL for AHT20
+// DS18B20 OneWire sensor
 #define ONE_WIRE_BUS 34     // DS18B20 data pin
-#define LIGHT_SENSOR 8      // Light sensor
+// Light sensor for adaptive brightness
+#define LIGHT_SENSOR_PIN 8  // Photocell/light sensor
 ```
 
-#### Relay Outputs
+#### Relay Outputs (ESP32-S3 GPIO)
 ```cpp
-const int heatRelay1Pin = 5;    // Stage 1 heating
-const int heatRelay2Pin = 7;    // Stage 2 heating  
-const int coolRelay1Pin = 6;    // Stage 1 cooling
-const int coolRelay2Pin = 26;   // Stage 2 cooling
-const int fanRelayPin = 25;     // Fan control
+// GPIO pins verified for ESP32-S3 schematic
+const int heatRelay1Pin = 5;    // Heat Stage 1
+const int heatRelay2Pin = 7;    // Heat Stage 2  
+const int coolRelay1Pin = 6;    // Cool Stage 1
+const int coolRelay2Pin = 39;   // Cool Stage 2
+const int fanRelayPin = 4;      // Fan Control
+```
+
+#### Status LEDs and Buzzer
+```cpp
+// PWM-controlled status indicators
+const int ledFanPin = 37;       // Fan status LED
+const int ledHeatPin = 38;      // Heat status LED
+const int ledCoolPin = 2;       // Cool status LED
+const int buzzerPin = 17;       // Buzzer (5V through 2N7002 MOSFET)
 ```
 
 #### Control Input
@@ -383,16 +407,31 @@ Located in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
 
 ## Version History
 
-### Version 1.0.3 (Current)
-- Complete thermostat functionality
-- MQTT/Home Assistant integration
-- Multi-stage HVAC support
-- Hydronic heating compatibility
-- Professional PCB design
-- Comprehensive web interface
-- Touch screen calibration
-- Factory reset capability
-- OTA update support
+### Version 1.0.8 (Current - November 2025)
+- **ESP32-S3-WROOM-1-N16 Platform**: Optimized for 16MB flash with huge_app.csv partition
+- **Dual-Core FreeRTOS Architecture**: Core 0 for UI/network, Core 1 for sensors/control
+- **Option C Centralized Display Management**: Mutex-protected display updates with task coordination
+- **Modern Material Design UI**: Enhanced color scheme with improved readability
+- **Advanced Multi-Stage HVAC**: Hybrid time/temperature staging with configurable parameters
+- **Comprehensive MQTT Integration**: Home Assistant auto-discovery with temperature precision
+- **Hydronic Heating Support**: DS18B20 water temperature monitoring with safety interlocks
+- **Adaptive Display Brightness**: Light sensor integration with PWM backlight control
+- **Factory Reset Capability**: 10-second boot button press for complete settings reset
+- **Professional PCB Integration**: Full compatibility with Stefan Meisner's hardware design
+- **Robust Error Handling**: Watchdog timer, graceful offline operation, comprehensive logging
+- **Touch Interface Optimization**: Maximum responsiveness with keyboard support for WiFi setup
+- **OTA Update Support**: Web-based firmware updates
+- **Production-Ready Stability**: Extensive testing and optimization for 24/7 operation
+
+### Previous Versions
+- **1.0.7**: Material Design colors, ESP32-S3-WROOM-1-N16 optimization
+- **1.0.6**: Visual improvements and UI enhancements
+- **1.0.5**: Option C display system implementation
+- **1.0.4**: HVAC logic working, stable baseline
+- **1.0.3**: Initial multi-stage HVAC support
+- **1.0.2**: Basic thermostat functionality
+- **1.0.1**: Initial ESP32-S3 port
+- **1.0.0**: Original ESP32 implementation
 
 ## License
 

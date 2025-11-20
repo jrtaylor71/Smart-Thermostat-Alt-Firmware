@@ -258,13 +258,9 @@ String mqttPassword = "password";
 ## File Structure Guide
 
 ```
-ESP32-Simple-Thermostat/
+Smart-Thermostat-Alt-Firmware/
 ├── src/
 │   └── Main-Thermostat.cpp     # Main source code
-├── ESP32-Simple-Thermostat-PCB/ # KiCad PCB files
-│   ├── *.kicad_sch             # Schematic files
-│   ├── *.kicad_pcb             # PCB layout files
-│   └── jlcpcb/                 # Manufacturing files
 ├── img/                        # Project images
 ├── platformio.ini              # PlatformIO configuration
 ├── README.md                   # Basic project info

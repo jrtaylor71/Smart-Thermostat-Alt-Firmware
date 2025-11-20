@@ -10,7 +10,6 @@ This project is **alternative firmware** for the excellent smart-thermostat hard
 
 We use Stefan's hardware design and provide an enhanced firmware implementation with advanced features including multi-core architecture, centralized display management, and comprehensive Home Assistant integration.
 
-![Thermostat Display](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/IMG_20250501_151129758.png)
 
 ## 🌟 Key Features
 
@@ -44,44 +43,12 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 6. Build and upload to ESP32-S3
 7. Use touch interface to configure WiFi and settings
 
-### Pin Configuration (ESP32-S3)
-
-#### TFT Display (ILI9341 + XPT2046 Touch)
-```cpp
-#define TFT_MISO 21    // SPI MISO (shared with touch)
-#define TFT_MOSI 12    // SPI MOSI (shared with touch)
-#define TFT_SCLK 13    // SPI Clock (shared with touch)
-#define TFT_CS    9    // TFT Chip Select
-#define TFT_DC   11    // Data/Command
-#define TFT_RST  10    // Reset
-#define TFT_BL   14    // Backlight
-#define TOUCH_CS 47    // Touch Chip Select
-#define TOUCH_IRQ 48   // Touch Interrupt
-```
-
-#### Sensors
-```cpp
-#define AHT20_SDA 36        // I2C SDA for AHT20
-#define AHT20_SCL 35        // I2C SCL for AHT20  
-#define ONE_WIRE_BUS 34     // DS18B20 data pin (optional)
-#define LIGHT_SENSOR 8      // Light sensor
-```
-
-#### Relay Outputs
-```cpp
-const int heatRelay1Pin = 5;    // Stage 1 heating
-const int heatRelay2Pin = 7;    // Stage 2 heating
-const int coolRelay1Pin = 6;    // Stage 1 cooling
-const int coolRelay2Pin = 39;   // Stage 2 cooling
-const int fanRelayPin = 4;      // Fan control
-```
-
 ## 💻 Web Interface
 
 Access the thermostat's web interface by navigating to its IP address:
 
 ### Status Page
-![Web Status](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/web-status.png)
+![Web Status](https://github.com/jrtaylor71/ESmart-Thermostat-Alt-Firmware/blob/main/img/web-status.png)
 
 Real-time monitoring of:
 - Current temperature and humidity
@@ -90,7 +57,7 @@ Real-time monitoring of:
 - System status
 
 ### Settings Page
-![Web Settings](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/img/web-settings.png)
+![Web Settings](https://github.com/jrtaylor71/Smart-Thermostat-Alt-Firmware/blob/main/img/web-settings.png)
 
 Complete configuration interface for:
 - Temperature setpoints and control modes
@@ -109,39 +76,6 @@ Automatic discovery and integration with Home Assistant:
 3. Thermostat appears automatically in Home Assistant
 4. Full control via Home Assistant interface
 5. Supports climate entity with heating/cooling modes
-
-### MQTT Topics
-- **Commands**: `esp32_thermostat/mode/set`, `esp32_thermostat/target_temperature/set`
-- **Status**: `esp32_thermostat/current_temperature`, `esp32_thermostat/mode`
-- **Discovery**: Automatic Home Assistant device discovery
-
-## 🔧 Professional PCB
-
-The project includes a complete custom PCB design:
-
-![PCB Top](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/ESP32-Simple-Thermostat-PCB/ESP32-Simple-Thermostat-PCB-top.png)
-![PCB Bottom](https://github.com/jrtaylor71/ESP32-Simple-Thermostat/blob/main/ESP32-Simple-Thermostat-PCB/ESP32-Simple-Thermostat-PCB-bottom.png)
-
-### PCB Features
-- Professional 4-layer design
-- All components integrated on single board
-- Labeled terminal blocks for easy HVAC wiring
-- Proper grounding and signal integrity
-- Standard mounting holes for enclosure installation
-
-### Manufacturing Files
-Complete manufacturing package in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
-- Gerber files for PCB fabrication
-- Drill files for via and hole placement
-- Bill of Materials (BOM) for component sourcing
-- Component Placement List (CPL) for assembly
-
-## 📖 Documentation
-
-- **[Complete Documentation](DOCUMENTATION.md)**: Comprehensive technical documentation
-- **[Copilot File](.copilot)**: GitHub Copilot context for development
-- **Inline Comments**: Extensive code documentation
-- **Serial Debug**: Detailed debug output for troubleshooting
 
 ## 🛠️ Advanced Features
 
