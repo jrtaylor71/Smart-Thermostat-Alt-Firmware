@@ -167,7 +167,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.5"; // Software version
+const String sw_version = "1.0.6"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -389,7 +389,7 @@ void setup()
     // Print version information at startup
     Serial.println();
     Serial.println("========================================");
-    Serial.println("ESP32 Simple Thermostat");
+    Serial.println("Smart Thermostat Alt Firmware");
     Serial.print("Version: ");
     Serial.println(version_info);
     Serial.print("Hostname: ");
@@ -425,15 +425,20 @@ void setup()
     tft.setRotation(1); // Set the rotation of the display as needed
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(0, 0);
-    tft.println("ESP32 Thermostat");
-    tft.setTextSize(1);
+    tft.setTextSize(3);  // Increased size from 2 to 3
+    tft.setCursor(15, 40);  // Better centered for display
+    tft.println("Smart Thermostat");
+    tft.setCursor(60, 70);  // Second line centered
+    tft.println("Alt Firmware");
+    tft.setTextSize(2);  // Increased from 1 to 2 for better readability
+    tft.setCursor(20, 110);  // Centered version info
     tft.println("Version: " + sw_version);
+    tft.setCursor(25, 135);  // Centered build info
     tft.println("Build: " + build_date);
     tft.println();
     tft.setTextSize(2);
     delay(5000); // Allow time to read startup info
+    tft.setCursor(60, 180);  // Center loading message
     tft.println("Loading Settings...");
 
     // Calibrate touch screen
@@ -1012,33 +1017,43 @@ void drawButtons()
     // Draw the "+" button
     tft.fillRect(270, 200, 40, 40, TFT_GREEN);
     tft.setCursor(285, 215);
-    tft.setTextColor(TFT_WHITE);
+    tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print("+");
 
     // Move the "-" button to the far bottom left corner
     tft.fillRect(0, 200, 40, 40, TFT_RED);
     tft.setCursor(15, 215);
-    tft.setTextColor(TFT_WHITE);
+    tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print("-");
 
     // Draw the WiFi settings button between minus and mode buttons
-    tft.fillRect(50, 200, 65, 40, TFT_CYAN);
-    tft.setCursor(60, 215);
+    tft.fillRect(47, 200, 68, 40, TFT_CYAN);
+    tft.setCursor(50, 208);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
+    tft.print("WiFi");
+    tft.setCursor(55, 220);
     tft.print("Setup");
 
     // Draw the thermostat mode button
     tft.fillRect(125, 200, 60, 40, TFT_BLUE);
-    tft.setCursor(133, 215);
-    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(130, 208);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(1);
+    tft.print("Mode:");
+    tft.setCursor(133, 220);
     tft.setTextSize(2);
     tft.print(thermostatMode);
 
     // Draw the fan mode button - make it wider to fit "cycle"
     tft.fillRect(195, 200, 65, 40, TFT_ORANGE);
+    
+    tft.setCursor(205, 208);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(1);
+    tft.print("Fan:");
     
     // Adjust text position based on fan mode to center it
     int fanTextX = 210;
@@ -1050,28 +1065,12 @@ void drawButtons()
         fanTextX = 200;
     }
     
-    tft.setCursor(fanTextX, 215);
-    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(fanTextX, 220);
+    tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print(fanMode);
 
-    // Add the word "FAN" above the fan mode button
-    tft.setCursor(210, 180); // Adjusted y-coordinate to move the text up
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.print("FAN");
 
-    // Add the word "MODE" above the mode button
-    tft.setCursor(140, 180); // Adjusted y-coordinate to move the text up
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.print("MODE");
-
-    // Add "WIFI" label above the WiFi button
-    tft.setCursor(60, 180); // Positioned above the WiFi button
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.print("WIFI");
 }
 
 void handleButtonPress(uint16_t x, uint16_t y)
@@ -2522,30 +2521,30 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // Draw heat indicator if heating is on
         if (heatActive)
         {
-            tft.fillRoundRect(10, 150, 90, 30, 5, TFT_RED);
+            tft.fillRoundRect(10, 145, 90, 30, 5, TFT_RED);
             tft.setTextColor(TFT_WHITE);
             tft.setTextSize(2);
-            tft.setCursor(15, 157);
+            tft.setCursor(15, 152);
             tft.print("HEATING");
         }
         
         // Draw cool indicator if cooling is on
         if (coolActive)
         {
-            tft.fillRoundRect(115, 150, 90, 30, 5, TFT_BLUE);
+            tft.fillRoundRect(115, 145, 90, 30, 5, TFT_BLUE);
             tft.setTextColor(TFT_WHITE);
             tft.setTextSize(2);
-            tft.setCursor(125, 157);
+            tft.setCursor(125, 152);
             tft.print("COOLING");
         }
         
         // Draw fan indicator if fan is on
         if (fanActive)
         {
-            tft.fillRoundRect(220, 150, 90, 30, 5, TFT_ORANGE);
+            tft.fillRoundRect(220, 145, 90, 30, 5, TFT_ORANGE);
             tft.setTextColor(TFT_WHITE);
             tft.setTextSize(2);
-            tft.setCursor(240, 157);
+            tft.setCursor(240, 152);
             tft.print("FAN");
         }
         
