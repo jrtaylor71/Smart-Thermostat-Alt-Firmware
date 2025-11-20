@@ -48,6 +48,8 @@
 #include <time.h>
 #include <ArduinoJson.h> // Include the ArduinoJson library
 #include <OneWire.h>
+#include "WebInterface.h"
+#include "WebPages.h"
 #include <DallasTemperature.h>
 #include <Update.h> // For OTA firmware update
 
@@ -2033,153 +2035,33 @@ void handleWebRequests()
 {
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = "<html><head><meta http-equiv='refresh' content='10'></head><body>"; // Changed refresh time to 10 seconds
-        html += "<h1>Smart Thermostat Alt Firmware</h1>";
-        html += "<h2>Status</h2>";
-        html += "<p><strong>Firmware Version:</strong> " + version_info + "</p>";
-        html += "<p><strong>Device Hostname:</strong> " + hostname + "</p>";
-        html += "<hr>";
-        html += "<p>Current Temperature: " + String(currentTemp) + (useFahrenheit ? " F" : " C") + "</p>";
-        html += "<p>Current Humidity: " + String(currentHumidity) + " %</p>";
-        if (hydronicHeatingEnabled) {
-            html += "<p>Hydronic Temperature: " + String(hydronicTemp) + " F</p>";
-        }
-        html += "<p>Thermostat Mode: " + thermostatMode + "</p>";
-        html += "<p>Fan Mode: " + fanMode + "</p>";
-        html += "<p>Heating Relay 1: " + String(digitalRead(heatRelay1Pin) ? "ON" : "OFF") + "</p>";
-        html += "<p>Heating Relay 2: " + String(digitalRead(heatRelay2Pin) ? "ON" : "OFF") + "</p>";
-        html += "<p>Cooling Relay 1: " + String(digitalRead(coolRelay1Pin) ? "ON" : "OFF") + "</p>";
-        html += "<p>Cooling Relay 2: " + String(digitalRead(coolRelay2Pin) ? "ON" : "OFF") + "</p>";
-        html += "<p>Fan Relay: " + String(digitalRead(fanRelayPin) ? "ON" : "OFF") + "</p>";
-        html += "<form action='/settings' method='GET'>";
-        html += "<input type='submit' value='Settings'>";
-        html += "</form>";
-        // Add a reboot button to the main page
-        html += "<form action='/reboot' method='POST'>";
-        html += "<input type='submit' value='Reboot'>";
-        html += "</form>";
-        html += "</body></html>";
-
+        String html = generateStatusPage(currentTemp, currentHumidity, hydronicTemp, 
+                                       thermostatMode, fanMode, version_info, hostname, 
+                                       useFahrenheit, hydronicHeatingEnabled,
+                                       heatRelay1Pin, heatRelay2Pin, coolRelay1Pin, 
+                                       coolRelay2Pin, fanRelayPin);
         request->send(200, "text/html", html);
     });
 
     server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = "<html><body>";
-        html += "<h1>Thermostat Settings</h1>";
-        html += "<form action='/set' method='POST'>";
-        html += "Thermostat Mode: <select name='thermostatMode'>";
-        html += "<option value='off'" + String(thermostatMode == "off" ? " selected" : "") + ">Off</option>";
-        html += "<option value='heat'" + String(thermostatMode == "heat" ? " selected" : "") + ">Heat</option>";
-        html += "<option value='cool'" + String(thermostatMode == "cool" ? " selected" : "") + ">Cool</option>";
-        html += "<option value='auto'" + String(thermostatMode == "auto" ? " selected" : "") + ">Auto</option>";
-        html += "</select><br>";
-        html += "Fan Mode: <select name='fanMode'>";
-        html += "<option value='auto'" + String(fanMode == "auto" ? " selected" : "") + ">Auto</option>";
-        html += "<option value='on'" + String(fanMode == "on" ? " selected" : "") + ">On</option>";
-        html += "<option value='cycle'" + String(fanMode == "cycle" ? " selected" : "") + ">Cycle</option>";
-        html += "</select><br>";
-        html += "Set Temp Heat: <input type='text' name='setTempHeat' value='" + String(setTempHeat) + "'><br>";
-        html += "Set Temp Cool: <input type='text' name='setTempCool' value='" + String(setTempCool) + "'><br>";
-        html += "Set Temp Auto: <input type='text' name='setTempAuto' value='" + String(setTempAuto) + "'><br>";
-        html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
-        html += "Auto Temp Swing: <input type='text' name='autoTempSwing' value='" + String(autoTempSwing) + "'><br>";
-//         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
-        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
-        html += "Use Fahrenheit: <input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + "><br>";
-        html += "MQTT Enabled: <input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + "><br>";
-        html += "Hybrid Staging Settings:<br>";
-        html += "Stage 1 Min Runtime (seconds): <input type='text' name='stage1MinRuntime' value='" + String(stage1MinRuntime) + "'><br>";
-        html += "Stage 2 Temp Delta: <input type='text' name='stage2TempDelta' value='" + String(stage2TempDelta) + "'><br>";
-        html += "Enable 2nd Stage Heating: <input type='checkbox' name='stage2HeatingEnabled' " + String(stage2HeatingEnabled ? "checked" : "") + "><br>";
-        html += "Enable 2nd Stage Cooling: <input type='checkbox' name='stage2CoolingEnabled' " + String(stage2CoolingEnabled ? "checked" : "") + "><br>";
-        html += "Hydronic Heating Enabled: <input type='checkbox' name='hydronicHeatingEnabled' " + String(hydronicHeatingEnabled ? "checked" : "") + "><br>";
-        html += "Hydronic Temp Low: <input type='text' name='hydronicTempLow' value='" + String(hydronicTempLow) + "'><br>";
-        html += "Hydronic Temp High: <input type='text' name='hydronicTempHigh' value='" + String(hydronicTempHigh) + "'><br>";
-        html += "Fan Minutes Per Hour: <input type='text' name='fanMinutesPerHour' value='" + String(fanMinutesPerHour) + "'><br>";
-        html += "MQTT Server: <input type='text' name='mqttServer' value='" + mqttServer + "'><br>";
-        html += "MQTT Port: <input type='text' name='mqttPort' value='" + String(mqttPort) + "'><br>";
-        html += "MQTT Username: <input type='text' name='mqttUsername' value='" + mqttUsername + "'><br>";
-        html += "MQTT Password: <input type='text' name='mqttPassword' value='" + mqttPassword + "'><br>";
-        html += "WiFi SSID: <input type='text' name='wifiSSID' value='" + wifiSSID + "'><br>";
-        html += "WiFi Password: <input type='text' name='wifiPassword' value='" + wifiPassword + "'><br>";
-        html += "Hostname: <input type='text' name='hostname' value='" + hostname + "'><br>";
-        html += "Clock Format: <select name='clockFormat'>";
-        html += "<option value='24' " + String(use24HourClock ? "selected" : "") + ">24-hour</option>";
-        html += "<option value='12' " + String(!use24HourClock ? "selected" : "") + ">12-hour</option>";
-        html += "</select><br>";
-        html += "Time Zone: <select name='timeZone'>";
-        html += "<option value='UTC' " + String(timeZone == "UTC" ? "selected" : "") + ">UTC</option>";
-        html += "<option value='PST8PDT,M3.2.0,M11.1.0' " + String(timeZone == "PST8PDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Pacific Time (PST)</option>";
-        html += "<option value='MST7MDT,M3.2.0,M11.1.0' " + String(timeZone == "MST7MDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Mountain Time (MST)</option>";
-        html += "<option value='CST6CDT,M3.2.0,M11.1.0' " + String(timeZone == "CST6CDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Central Time (CST)</option>";
-        html += "<option value='EST5EDT,M3.2.0,M11.1.0' " + String(timeZone == "EST5EDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Eastern Time (EST)</option>";
-        html += "<option value='AST4ADT,M3.2.0,M11.1.0' " + String(timeZone == "AST4ADT,M3.2.0,M11.1.0" ? "selected" : "") + ">Atlantic Time (AST)</option>";
-        html += "<option value='NST3:30NDT,M3.2.0,M11.1.0' " + String(timeZone == "NST3:30NDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Newfoundland Time (NST)</option>";
-        html += "<option value='HST10HDT,M3.2.0,M11.1.0' " + String(timeZone == "HST10HDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Hawaii-Aleutian Time (HST)</option>";
-        html += "<option value='AKST9AKDT,M3.2.0,M11.1.0' " + String(timeZone == "AKST9AKDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Alaska Time (AKST)</option>";
-        html += "<option value='AEST-10AEDT,M10.1.0,M4.1.0/3' " + String(timeZone == "AEST-10AEDT,M10.1.0,M4.1.0/3" ? "selected" : "") + ">Australian Eastern Time (AEST)</option>";
-        html += "<option value='ACST-9:30ACDT,M10.1.0,M4.1.0/3' " + String(timeZone == "ACST-9:30ACDT,M10.1.0,M4.1.0/3" ? "selected" : "") + ">Australian Central Time (ACST)</option>";
-        html += "<option value='AWST-8' " + String(timeZone == "AWST-8" ? "selected" : "") + ">Australian Western Time (AWST)</option>";
-        html += "<option value='NZST-12NZDT,M9.5.0,M4.1.0/3' " + String(timeZone == "NZST-12NZDT,M9.5.0,M4.1.0/3" ? "selected" : "") + ">New Zealand Time (NZST)</option>";
-        html += "<option value='WET0WEST,M3.5.0/1,M10.5.0' " + String(timeZone == "WET0WEST,M3.5.0/1,M10.5.0" ? "selected" : "") + ">Western European Time (WET)</option>";
-        html += "<option value='CET-1CEST,M3.5.0,M10.5.0/3' " + String(timeZone == "CET-1CEST,M3.5.0,M10.5.0/3" ? "selected" : "") + ">Central European Time (CET)</option>";
-        html += "<option value='EET-2EEST,M3.5.0/3,M10.5.0/4' " + String(timeZone == "EET-2EEST,M3.5.0/3,M10.5.0/4" ? "selected" : "") + ">Eastern European Time (EET)</option>";
-        html += "<option value='ART-3' " + String(timeZone == "ART-3" ? "selected" : "") + ">Argentina Time (ART)</option>";
-        html += "<option value='BRT-3' " + String(timeZone == "BRT-3" ? "selected" : "") + ">Brasilia Time (BRT)</option>";
-        html += "<option value='CLT-4' " + String(timeZone == "CLT-4" ? "selected" : "") + ">Chile Time (CLT)</option>";
-        html += "<option value='COT-5' " + String(timeZone == "COT-5" ? "selected" : "") + ">Colombia Time (COT)</option>";
-        html += "<option value='ECT-5' " + String(timeZone == "ECT-5" ? "selected" : "") + ">Ecuador Time (ECT)</option>";
-        html += "<option value='GYT-4' " + String(timeZone == "GYT-4" ? "selected" : "") + ">Guyana Time (GYT)</option>";
-        html += "<option value='PYT-4' " + String(timeZone == "PYT-4" ? "selected" : "") + ">Paraguay Time (PYT)</option>";
-        html += "<option value='PET-5' " + String(timeZone == "PET-5" ? "selected" : "") + ">Peru Time (PET)</option>";
-        html += "<option value='VET-4:30' " + String(timeZone == "VET-4:30" ? "selected" : "") + ">Venezuelan Time (VET)</option>";
-        html += "<option value='GMT0BST,M3.5.0/1,M10.5.0' " + String(timeZone == "GMT0BST,M3.5.0/1,M10.5.0" ? "selected" : "") + ">Greenwich Mean Time (GMT)</option>";
-        html += "<option value='IST-5:30' " + String(timeZone == "IST-5:30" ? "selected" : "") + ">India Standard Time (IST)</option>";
-        html += "<option value='JST-9' " + String(timeZone == "JST-9" ? "selected" : "") + ">Japan Standard Time (JST)</option>";
-        html += "<option value='KST-9' " + String(timeZone == "KST-9" ? "selected" : "") + ">Korea Standard Time (KST)</option>";
-        html += "<option value='CST-8' " + String(timeZone == "CST-8" ? "selected" : "") + ">China Standard Time (CST)</option>";
-        html += "<option value='SGT-8' " + String(timeZone == "SGT-8" ? "selected" : "") + ">Singapore Time (SGT)</option>";
-        html += "<option value='HKT-8' " + String(timeZone == "HKT-8" ? "selected" : "") + ">Hong Kong Time (HKT)</option>";
-        html += "<option value='MYT-8' " + String(timeZone == "MYT-8" ? "selected" : "") + ">Malaysia Time (MYT)</option>";
-        html += "<option value='PHT-8' " + String(timeZone == "PHT-8" ? "selected" : "") + ">Philippine Time (PHT)</option>";
-        html += "<option value='WITA-8' " + String(timeZone == "WITA-8" ? "selected" : "") + ">Central Indonesia Time (WITA)</option>";
-        html += "<option value='WIB-7' " + String(timeZone == "WIB-7" ? "selected" : "") + ">Western Indonesia Time (WIB)</option>";
-        html += "<option value='WIT-9' " + String(timeZone == "WIT-9" ? "selected" : "") + ">Eastern Indonesia Time (WIT)</option>";
-        html += "<option value='NZST-12NZDT,M9.5.0,M4.1.0/3' " + String(timeZone == "NZST-12NZDT,M9.5.0,M4.1.0/3" ? "selected" : "") + ">New Zealand Time (NZST)</option>";
-        html += "</select><br>";
-        html += "<h3>AHT20 Sensor Calibration</h3>";
-        html += "Temperature Offset (&deg;C): <input type='text' name='tempOffset' value='" + String(tempOffset, 2) + "' placeholder='0.0'><br>";
-        html += "Humidity Offset (%): <input type='text' name='humidityOffset' value='" + String(humidityOffset, 2) + "' placeholder='0.0'><br>";
-        html += "<small>Note: Positive values increase readings, negative values decrease them.</small><br><br>";
-        html += "<h3>Display Sleep Settings</h3>";
-        html += "Enable Display Sleep: <input type='checkbox' name='displaySleepEnabled' " + String(displaySleepEnabled ? "checked" : "") + "><br>";
-        html += "Sleep Timeout (minutes): <input type='text' name='displaySleepTimeout' value='" + String(displaySleepTimeout / 60000) + "' placeholder='5'><br>";
-        html += "<small>Display will turn black after this many minutes of inactivity. Touch to wake.</small><br><br>";
-        html += "<input type='submit' value='Save Settings'>";
-        html += "</form>";
-        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
-        html += "<form action='/update' method='GET'><input type='submit' value='OTA Update'></form>";
-        html += "<form action='/confirm_restore' method='GET'><input type='submit' value='Restore Defaults'></form>";
-        html += "</body></html>";
-
+        String html = generateSettingsPage(thermostatMode, fanMode, setTempHeat, setTempCool, 
+                                         setTempAuto, tempSwing, autoTempSwing, fanRelayNeeded, 
+                                         useFahrenheit, mqttEnabled, stage1MinRuntime, 
+                                         stage2TempDelta, stage2HeatingEnabled, stage2CoolingEnabled,
+                                         hydronicHeatingEnabled, hydronicTempLow, hydronicTempHigh, 
+                                         fanMinutesPerHour, mqttServer, mqttPort, mqttUsername, 
+                                         mqttPassword, wifiSSID, wifiPassword, hostname, 
+                                         use24HourClock, timeZone, tempOffset, humidityOffset, 
+                                         displaySleepEnabled, displaySleepTimeout);
         request->send(200, "text/html", html);
     });
 
     server.on("/confirm_restore", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        String html = "<html><body>";
-        html += "<h1>Confirm Restore Defaults</h1>";
-        html += "<p>Are you sure you want to restore default settings? This will overwrite your current settings.</p>";
-        html += "<form action='/restore_defaults' method='POST'>";
-        html += "<input type='submit' value='Yes, Restore Defaults'>";
-        html += "</form>";
-        html += "<form action='/' method='GET'>";
-        html += "<input type='submit' value='Cancel'>";
-        html += "</form>";
-        html += "</body></html>";
-
-        request->send(200, "text/html", html); });
+        String html = generateFactoryResetPage();
+        request->send(200, "text/html", html);
+    });
 
     server.on("/restore_defaults", HTTP_POST, [](AsyncWebServerRequest *request)
               {
@@ -2438,14 +2320,7 @@ void handleWebRequests()
 
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = "<html><body>";
-        html += "<h1>OTA Firmware Update</h1>";
-        html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
-        html += "<input type='file' name='firmware'>";
-        html += "<input type='submit' value='Update Firmware'>";
-        html += "</form>";
-        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
-        html += "</body></html>";
+        String html = generateOTAPage();
         request->send(200, "text/html", html);
     });
 
