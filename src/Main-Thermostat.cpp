@@ -148,7 +148,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.4"; // Software version
+const String sw_version = "1.0.5"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -224,6 +224,26 @@ void activateHeating();
 void activateCooling();
 void handleFanControl();
 
+// Option C - Centralized Display Update System
+void displayUpdateTaskFunction(void* parameter);
+void updateDisplayIndicators();
+void setDisplayUpdateFlag();
+TaskHandle_t displayUpdateTask = NULL;
+bool displayUpdateRequired = false;
+unsigned long displayUpdateInterval = 250; // Update every 250ms
+SemaphoreHandle_t displayUpdateMutex = NULL;
+
+// Display indicator states (managed centrally)
+struct DisplayIndicators {
+    bool heatIndicator = false;
+    bool coolIndicator = false;
+    bool fanIndicator = false;
+    bool autoIndicator = false;
+    bool stage1Indicator = false;
+    bool stage2Indicator = false;
+    unsigned long lastUpdate = 0;
+} displayIndicators;
+
 uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibration data
 
 float currentTemp = 0.0;
@@ -261,6 +281,85 @@ void sensorTaskFunction(void *parameter) {
         
         // 5 second delay for responsive control while minimizing CPU load
         vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
+}
+
+// Option C: Centralized Display Update Task
+void displayUpdateTaskFunction(void* parameter) {
+    Serial.println("DISPLAY_TASK: Starting centralized display update task");
+    
+    for (;;) {
+        // Check if display update is required or if enough time has passed
+        bool updateNeeded = false;
+        unsigned long currentTime = millis();
+        
+        if (xSemaphoreTake(displayUpdateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            updateNeeded = displayUpdateRequired || 
+                          (currentTime - displayIndicators.lastUpdate > displayUpdateInterval);
+            
+            if (updateNeeded) {
+                displayUpdateRequired = false;  // Clear the flag
+                displayIndicators.lastUpdate = currentTime;
+            }
+            
+            xSemaphoreGive(displayUpdateMutex);
+        }
+        
+        if (updateNeeded) {
+            updateDisplayIndicators();
+        }
+        
+        // Run every 50ms to be responsive, but only update display when needed
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+}
+
+// Update display indicators based on current system state
+void updateDisplayIndicators() {
+    Serial.println("DISPLAY_UPDATE: Refreshing display indicators");
+    
+    // Take mutex to read system state safely
+    if (xSemaphoreTake(displayUpdateMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        // Update indicator states based on current system state
+        displayIndicators.heatIndicator = (thermostatMode == "heat") || 
+                                         (thermostatMode == "auto" && heatingOn);
+        displayIndicators.coolIndicator = (thermostatMode == "cool") || 
+                                         (thermostatMode == "auto" && coolingOn);
+        displayIndicators.fanIndicator = fanOn;
+        displayIndicators.autoIndicator = (thermostatMode == "auto");
+        displayIndicators.stage1Indicator = stage1Active;
+        displayIndicators.stage2Indicator = stage2Active;
+        
+        xSemaphoreGive(displayUpdateMutex);
+        
+        // Update physical LED indicators (hardware I/O outside mutex)
+        setHeatLED(displayIndicators.heatIndicator);
+        setCoolLED(displayIndicators.coolIndicator);  
+        setFanLED(displayIndicators.fanIndicator);
+        
+        Serial.print("DISPLAY_UPDATE: Heat=");
+        Serial.print(displayIndicators.heatIndicator ? "ON" : "OFF");
+        Serial.print(", Cool=");
+        Serial.print(displayIndicators.coolIndicator ? "ON" : "OFF");
+        Serial.print(", Fan=");
+        Serial.print(displayIndicators.fanIndicator ? "ON" : "OFF");
+        Serial.print(", Auto=");
+        Serial.print(displayIndicators.autoIndicator ? "ON" : "OFF");
+        Serial.print(", Stage1=");
+        Serial.print(displayIndicators.stage1Indicator ? "ON" : "OFF");
+        Serial.print(", Stage2=");
+        Serial.println(displayIndicators.stage2Indicator ? "ON" : "OFF");
+    } else {
+        Serial.println("DISPLAY_UPDATE: Failed to take mutex, skipping update");
+    }
+}
+
+// Function to request display update from other parts of the code
+void setDisplayUpdateFlag() {
+    if (xSemaphoreTake(displayUpdateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        displayUpdateRequired = true;
+        xSemaphoreGive(displayUpdateMutex);
+        Serial.println("DISPLAY_FLAG: Display update requested");
     }
 }
 
@@ -457,7 +556,25 @@ void setup()
         1                  // Core 1
     );
     
-    Serial.println("Dual-core thermostat setup complete");
+    // Option C: Create display update mutex and task on core 0
+    displayUpdateMutex = xSemaphoreCreateMutex();
+    if (displayUpdateMutex == NULL) {
+        Serial.println("ERROR: Failed to create display update mutex!");
+    } else {
+        Serial.println("Display update mutex created successfully");
+    }
+    
+    xTaskCreatePinnedToCore(
+        displayUpdateTaskFunction,  // Task function
+        "DisplayUpdateTask",       // Name
+        4096,                     // Stack size (smaller than sensor task)
+        NULL,                     // Parameters
+        2,                        // Priority (higher than sensor task)
+        &displayUpdateTask,       // Task handle
+        0                         // Core 0 (same as main display operations)
+    );
+    
+    Serial.println("Dual-core thermostat with centralized display updates setup complete");
     
     // Play startup tone to indicate setup is complete
     buzzerStartupTone();
@@ -1104,6 +1221,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
         controlRelays(currentTemp);
         // Update display after relays for accurate indicators
         updateDisplay(currentTemp, currentHumidity);
+        setDisplayUpdateFlag(); // Option C: Request display update
     }
     else if (x > 195 && x < 265 && y > 195 && y < 245) // Fan button with slightly increased touch area
     {
@@ -1281,6 +1399,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             Serial.println(thermostatMode);
             settingsNeedSaving = true;
             controlRelays(currentTemp); // Apply changes to relays
+            setDisplayUpdateFlag(); // Option C: Request display update
         }
     }
     else if (String(topic) == fanModeSetTopic)
@@ -1349,7 +1468,7 @@ void sendMQTTData()
         if (!isnan(currentTemp) && currentTemp != lastTemp)
         {
             String currentTempTopic = hostname + "/current_temperature";
-            mqttClient.publish(currentTempTopic.c_str(), String(currentTemp).c_str(), true);
+            mqttClient.publish(currentTempTopic.c_str(), String(currentTemp, 1).c_str(), true);
             lastTemp = currentTemp;
         }
 
@@ -1357,7 +1476,7 @@ void sendMQTTData()
         if (!isnan(currentHumidity) && currentHumidity != lastHumidity)
         {
             String currentHumidityTopic = hostname + "/current_humidity";
-            mqttClient.publish(currentHumidityTopic.c_str(), String(currentHumidity).c_str(), true);
+            mqttClient.publish(currentHumidityTopic.c_str(), String(currentHumidity, 1).c_str(), true);
             lastHumidity = currentHumidity;
         }
 
@@ -1365,19 +1484,19 @@ void sendMQTTData()
         if (thermostatMode == "heat" && setTempHeat != lastSetTempHeat)
         {
             String targetTempTopic = hostname + "/target_temperature";
-            mqttClient.publish(targetTempTopic.c_str(), String(setTempHeat).c_str(), true);
+            mqttClient.publish(targetTempTopic.c_str(), String(setTempHeat, 1).c_str(), true);
             lastSetTempHeat = setTempHeat;
         }
         else if (thermostatMode == "cool" && setTempCool != lastSetTempCool)
         {
             String targetTempTopic = hostname + "/target_temperature";
-            mqttClient.publish(targetTempTopic.c_str(), String(setTempCool).c_str(), true);
+            mqttClient.publish(targetTempTopic.c_str(), String(setTempCool, 1).c_str(), true);
             lastSetTempCool = setTempCool;
         }
         else if (thermostatMode == "auto" && setTempAuto != lastSetTempAuto)
         {
             String targetTempTopic = hostname + "/target_temperature";
-            mqttClient.publish(targetTempTopic.c_str(), String(setTempAuto).c_str(), true);
+            mqttClient.publish(targetTempTopic.c_str(), String(setTempAuto, 1).c_str(), true);
             lastSetTempAuto = setTempAuto;
         }
 
@@ -1618,6 +1737,7 @@ void turnOffAllRelays()
     stage2Active = false; // Reset stage 2 active flag
     Serial.printf("[DEBUG] turnOffAllRelays() COMPLETE: heatingOn=%d, coolingOn=%d, fanOn=%d\n", heatingOn, coolingOn, fanOn);
     updateStatusLEDs(); // Update LED status
+    setDisplayUpdateFlag(); // Option C: Request display update
 }
 
 void activateHeating() {
@@ -1675,6 +1795,7 @@ void activateHeating() {
         }
     }
     updateStatusLEDs(); // Update LED status
+    setDisplayUpdateFlag(); // Option C: Request display update
 }
 
 void activateCooling()
@@ -1719,6 +1840,7 @@ void activateCooling()
         }
     }
     updateStatusLEDs(); // Update LED status
+    setDisplayUpdateFlag(); // Option C: Request display update
 }
 
 void handleFanControl()
@@ -1733,6 +1855,7 @@ void handleFanControl()
         digitalWrite(fanRelayPin, LOW);
         fanOn = false;
     }
+    setDisplayUpdateFlag(); // Option C: Request display update
 }
 
 void controlFanSchedule()
