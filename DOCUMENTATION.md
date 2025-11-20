@@ -19,36 +19,40 @@ The ESP32 Simple Thermostat is a comprehensive, feature-rich smart thermostat sy
 ## Hardware Components
 
 ### Main Components
-- **ESP32 WROOM-32 Development Kit**: Main microcontroller
-- **ILI9341 TFT LCD Touch Screen**: 320x240 pixel display with resistive touch
-- **DHT11 Sensor**: Temperature and humidity measurement
-- **DS18B20 Sensor**: Water/hydronic temperature measurement (optional)
+- **ESP32-S3-WROOM-1-N16**: Main microcontroller (16MB Flash, No PSRAM)
+- **ILI9341 TFT LCD with XPT2046**: 320x240 pixel display with resistive touch controller
+- **AHT20 Sensor**: I2C temperature and humidity measurement  
+- **DS18B20 Sensor**: OneWire water/hydronic temperature measurement (optional)
 - **5x Relay Outputs**: Control for heating, cooling, and fan systems
 
-### Pin Configuration
+### Pin Configuration (ESP32-S3)
 
-#### TFT Display Connections
+#### TFT Display Connections (ILI9341 + XPT2046)
 ```cpp
-#define TFT_MISO 19    // SPI MISO
-#define TFT_MOSI 23    // SPI MOSI  
-#define TFT_SCLK 18    // SPI Clock
-#define TFT_CS   15    // Chip Select
-#define TFT_DC    2    // Data/Command
-#define TFT_RST  -1    // Reset (connected to ESP32 reset)
-#define TOUCH_CS  4    // Touch Chip Select
+#define TFT_MISO 21    // SPI MISO (shared with touch)
+#define TFT_MOSI 12    // SPI MOSI (shared with touch)
+#define TFT_SCLK 13    // SPI Clock (shared with touch)  
+#define TFT_CS    9    // TFT Chip Select
+#define TFT_DC   11    // Data/Command
+#define TFT_RST  10    // Reset
+#define TFT_BL   14    // Backlight
+#define TOUCH_CS 47    // Touch Chip Select
+#define TOUCH_IRQ 48   // Touch Interrupt
 ```
 
 #### Sensor Connections
 ```cpp
-#define DHTPIN 22           // DHT11 data pin
-#define ONE_WIRE_BUS 27     // DS18B20 data pin
+#define AHT20_SDA 36        // I2C SDA for AHT20
+#define AHT20_SCL 35        // I2C SCL for AHT20
+#define ONE_WIRE_BUS 34     // DS18B20 data pin
+#define LIGHT_SENSOR 8      // Light sensor
 ```
 
 #### Relay Outputs
 ```cpp
-const int heatRelay1Pin = 13;   // Stage 1 heating
-const int heatRelay2Pin = 12;   // Stage 2 heating  
-const int coolRelay1Pin = 14;   // Stage 1 cooling
+const int heatRelay1Pin = 5;    // Stage 1 heating
+const int heatRelay2Pin = 7;    // Stage 2 heating  
+const int coolRelay1Pin = 6;    // Stage 1 cooling
 const int coolRelay2Pin = 26;   // Stage 2 cooling
 const int fanRelayPin = 25;     // Fan control
 ```

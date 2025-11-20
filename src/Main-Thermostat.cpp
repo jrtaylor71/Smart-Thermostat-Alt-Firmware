@@ -167,10 +167,21 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.6"; // Software version
+const String sw_version = "1.0.7"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
+
+// Modern Material Design Color Scheme
+#define COLOR_BACKGROUND   0x1082    // Dark Gray #121212
+#define COLOR_PRIMARY      0x1976    // Soft Blue #1976D2
+#define COLOR_SECONDARY    0x0497    // Teal #0097A7
+#define COLOR_ACCENT       0xFFC1    // Amber #FFC107
+#define COLOR_TEXT         0xFFFF    // White #FFFFFF
+#define COLOR_TEXT_LIGHT   0xE0E0    // Light Gray #E0E0E0
+#define COLOR_SUCCESS      0x4CAF    // Soft Green #4CAF50
+#define COLOR_WARNING      0xFF70    // Warm Orange #FF7043
+#define COLOR_SURFACE      0x2124    // Slightly lighter gray #212121
 
 
 bool heatingOn = false;
@@ -423,8 +434,8 @@ void setup()
     // Initialize the TFT display
     tft.init();
     tft.setRotation(1); // Set the rotation of the display as needed
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.fillScreen(COLOR_BACKGROUND);
+    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
     tft.setTextSize(3);  // Increased size from 2 to 3
     tft.setCursor(15, 40);  // Better centered for display
     tft.println("Smart Thermostat");
@@ -485,7 +496,7 @@ void setup()
     WiFi.setHostname(hostname.c_str()); // Set the WiFi device name
     
     // Clear the "Loading Settings..." message
-    tft.fillScreen(TFT_BLACK);
+    tft.fillScreen(COLOR_BACKGROUND);
     
     // Setup WiFi if credentials exist, but don't block if it fails
     bool wifiConnected = false;
@@ -639,8 +650,8 @@ void loop()
         Serial.println("Factory reset triggered by boot button!");
         
         // Show reset message on display
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.fillScreen(COLOR_BACKGROUND);
+        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2);
         tft.setCursor(10, 10);
         tft.println("FACTORY RESET");
@@ -838,7 +849,7 @@ void connectToWiFi()
 void enterWiFiCredentials()
 {
     // Make sure we clear the screen completely before drawing the keyboard
-    tft.fillScreen(TFT_BLACK);
+    tft.fillScreen(COLOR_BACKGROUND);
     
     // Reset input text and set initial state to entering SSID
     inputText = "";
@@ -869,10 +880,10 @@ void enterWiFiCredentials()
 void drawKeyboard(bool isUpperCaseKeyboard)
 {
     // Clear the entire screen first to prevent any overlapping elements
-    tft.fillScreen(TFT_BLACK);
+    tft.fillScreen(COLOR_BACKGROUND);
     
     // Set text properties for the keyboard display
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
     tft.setTextSize(2);
     tft.setCursor(0, 0);
     tft.println(isEnteringSSID ? "Enter SSID:" : "Enter Password:");
@@ -912,7 +923,7 @@ void drawKeyboard(bool isUpperCaseKeyboard)
     {
         for (int col = 0; col < 10; col++)
         {
-            tft.drawRect(col * (keyWidth + 3) + xOffset, row * (keyHeight + 3) + yOffset, keyWidth, keyHeight, TFT_WHITE);
+            tft.drawRect(col * (keyWidth + 3) + xOffset, row * (keyHeight + 3) + yOffset, keyWidth, keyHeight, COLOR_TEXT);
             tft.setCursor(col * (keyWidth + 3) + xOffset + 5, row * (keyHeight + 3) + yOffset + 5);
             tft.print(keys[row][col]);
         }
@@ -1007,7 +1018,7 @@ void handleKeyPress(int row, int col)
         inputText += keyLabel;
     }
 
-    tft.fillRect(0, 30, 320, 30, TFT_BLACK);
+    tft.fillRect(0, 30, 320, 30, COLOR_BACKGROUND);
     tft.setCursor(0, 30);
     tft.println(inputText);
 }
@@ -1015,21 +1026,21 @@ void handleKeyPress(int row, int col)
 void drawButtons()
 {
     // Draw the "+" button
-    tft.fillRect(270, 200, 40, 40, TFT_GREEN);
+    tft.fillRect(270, 200, 40, 40, COLOR_SUCCESS);
     tft.setCursor(285, 215);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print("+");
 
     // Move the "-" button to the far bottom left corner
-    tft.fillRect(0, 200, 40, 40, TFT_RED);
+    tft.fillRect(0, 200, 40, 40, COLOR_WARNING);
     tft.setCursor(15, 215);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
     tft.print("-");
 
     // Draw the WiFi settings button between minus and mode buttons
-    tft.fillRect(47, 200, 68, 40, TFT_CYAN);
+    tft.fillRect(47, 200, 68, 40, COLOR_SECONDARY);
     tft.setCursor(50, 208);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(2);
@@ -1038,7 +1049,7 @@ void drawButtons()
     tft.print("Setup");
 
     // Draw the thermostat mode button
-    tft.fillRect(125, 200, 60, 40, TFT_BLUE);
+    tft.fillRect(125, 200, 60, 40, COLOR_PRIMARY);
     tft.setCursor(130, 208);
     tft.setTextColor(TFT_BLACK);
     tft.setTextSize(1);
@@ -1048,7 +1059,7 @@ void drawButtons()
     tft.print(thermostatMode);
 
     // Draw the fan mode button - make it wider to fit "cycle"
-    tft.fillRect(195, 200, 65, 40, TFT_ORANGE);
+    tft.fillRect(195, 200, 65, 40, COLOR_ACCENT);
     
     tft.setCursor(205, 208);
     tft.setTextColor(TFT_BLACK);
@@ -1098,7 +1109,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
         if (inWiFiSetupMode) {
             // Cancel WiFi setup and return to main screen
             inWiFiSetupMode = false;
-            tft.fillScreen(TFT_BLACK);
+            tft.fillScreen(COLOR_BACKGROUND);
             updateDisplay(currentTemp, currentHumidity);
             drawButtons();
             return;
@@ -1106,8 +1117,8 @@ void handleButtonPress(uint16_t x, uint16_t y)
         
         // Handle WiFi setup button press - enter WiFi setup mode
         inWiFiSetupMode = true;
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.fillScreen(COLOR_BACKGROUND);
+        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2);
         tft.setCursor(10, 10);
         tft.println("WiFi Setup");
@@ -2405,9 +2416,10 @@ void updateDisplay(float currentTemp, float currentHumidity)
         }
 
         // Clear the area for time display
-        tft.fillRect(0, 0, 240, 20, TFT_BLACK);
+        tft.fillRect(0, 0, 240, 20, COLOR_BACKGROUND);
 
         // Display current time and day of the week
+        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2);
         tft.setCursor(0, 0);
         tft.print(timeStr);
@@ -2423,10 +2435,11 @@ void updateDisplay(float currentTemp, float currentHumidity)
     if (currentTemp != previousTemp || currentHumidity != previousHumidity)
     {
         // Clear only the areas that need to be updated
-        tft.fillRect(240, 20, 80, 40, TFT_BLACK); // Clear temperature area
-        tft.fillRect(240, 60, 80, 40, TFT_BLACK); // Clear humidity area
+        tft.fillRect(240, 20, 80, 40, COLOR_BACKGROUND); // Clear temperature area
+        tft.fillRect(240, 60, 80, 40, COLOR_BACKGROUND); // Clear humidity area
 
         // Display temperature and humidity on the right side vertically
+        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2); // Adjust text size to fit the display
         tft.setRotation(1); // Set rotation for vertical display
         tft.setCursor(240, 20); // Adjust cursor position for temperature
@@ -2454,9 +2467,10 @@ void updateDisplay(float currentTemp, float currentHumidity)
     if (hydronicHeatingEnabled) {
         if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
             // Clear hydronic temperature area (now on right side under humidity)
-            tft.fillRect(240, 100, 80, 40, TFT_BLACK);
+            tft.fillRect(240, 100, 80, 40, COLOR_BACKGROUND);
             
             // Display hydronic temperature on right side
+            tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
             tft.setTextSize(2);
             tft.setCursor(240, 100); // Position below humidity
             char hydronicTempStr[6];
@@ -2470,7 +2484,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
     } 
     else if (prevHydronicDisplayState) {
         // If hydronic heating is disabled or sensor not present, clear the area
-        tft.fillRect(240, 100, 80, 40, TFT_BLACK);
+        tft.fillRect(240, 100, 80, 40, COLOR_BACKGROUND);
         prevHydronicDisplayState = false;
     }
 
@@ -2481,9 +2495,10 @@ void updateDisplay(float currentTemp, float currentHumidity)
         if (currentSetTemp != previousSetTemp)
         {
             // Clear only the area that needs to be updated
-            tft.fillRect(60, 100, 200, 40, TFT_BLACK); // Clear set temperature area
+            tft.fillRect(60, 100, 200, 40, COLOR_BACKGROUND); // Clear set temperature area
 
             // Display set temperature in the center of the display
+            tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
             tft.setTextSize(4);
             tft.setCursor(60, 100);
             char tempStr[6];
@@ -2498,7 +2513,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
     else
     {
         // Clear the set temperature area if mode is "off"
-        tft.fillRect(60, 100, 200, 40, TFT_BLACK);
+        tft.fillRect(60, 100, 200, 40, COLOR_BACKGROUND);
     }
 
     // Add status indicators for heating, cooling, and fan
@@ -2516,13 +2531,13 @@ void updateDisplay(float currentTemp, float currentHumidity)
     if (heatActive != prevHeatingStatus || coolActive != prevCoolingStatus || fanActive != prevFanStatus)
     {
         // Clear the status indicator area
-        tft.fillRect(0, 150, 320, 30, TFT_BLACK);
+        tft.fillRect(0, 150, 320, 30, COLOR_BACKGROUND);
         
         // Draw heat indicator if heating is on
         if (heatActive)
         {
-            tft.fillRoundRect(10, 145, 90, 30, 5, TFT_RED);
-            tft.setTextColor(TFT_WHITE);
+            tft.fillRoundRect(10, 145, 90, 30, 5, COLOR_WARNING);
+            tft.setTextColor(TFT_BLACK);
             tft.setTextSize(2);
             tft.setCursor(15, 152);
             tft.print("HEATING");
@@ -2531,8 +2546,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // Draw cool indicator if cooling is on
         if (coolActive)
         {
-            tft.fillRoundRect(115, 145, 90, 30, 5, TFT_BLUE);
-            tft.setTextColor(TFT_WHITE);
+            tft.fillRoundRect(115, 145, 90, 30, 5, COLOR_PRIMARY);
+            tft.setTextColor(TFT_BLACK);
             tft.setTextSize(2);
             tft.setCursor(125, 152);
             tft.print("COOLING");
@@ -2541,8 +2556,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // Draw fan indicator if fan is on
         if (fanActive)
         {
-            tft.fillRoundRect(220, 145, 90, 30, 5, TFT_ORANGE);
-            tft.setTextColor(TFT_WHITE);
+            tft.fillRoundRect(220, 145, 90, 30, 5, COLOR_ACCENT);
+            tft.setTextColor(TFT_BLACK);
             tft.setTextSize(2);
             tft.setCursor(240, 152);
             tft.print("FAN");
@@ -2734,11 +2749,11 @@ void calibrateTouchScreen()
     else
     {
         Serial.println("Calibrating touch screen...");
-        tft.fillScreen(TFT_BLACK);
+        tft.fillScreen(COLOR_BACKGROUND);
         tft.setCursor(20, 0);
         tft.setTextFont(2);
         tft.setTextSize(1);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
 
         tft.println("Touch corners as indicated");
         tft.setTextFont(1);

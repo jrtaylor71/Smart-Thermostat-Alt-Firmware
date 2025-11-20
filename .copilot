@@ -14,11 +14,11 @@ This is an ESP32-based IoT thermostat project using PlatformIO and Arduino frame
 - Custom PCB design files (KiCad format)
 
 ### Architecture Overview
-- **Platform**: ESP32 WROOM-32 development board
-- **Framework**: Arduino Core for ESP32
+- **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
+- **Framework**: Arduino Core for ESP32-S3
 - **IDE**: PlatformIO (VS Code extension)
-- **Display**: ILI9341 TFT LCD with resistive touch
-- **Sensors**: DHT11 (ambient temp/humidity), DS18B20 (water temperature)
+- **Display**: ILI9341 TFT LCD with XPT2046 resistive touch
+- **Sensors**: AHT20 (ambient temp/humidity), DS18B20 (water temperature)
 - **Communication**: WiFi, MQTT, HTTP web server
 - **Storage**: ESP32 Preferences (non-volatile memory)
 
@@ -276,15 +276,17 @@ ESP32-Simple-Thermostat/
 ### Core Libraries (platformio.ini)
 ```ini
 lib_deps = 
-    WiFi                        # ESP32 WiFi connectivity
-    ESP Async WebServer         # Non-blocking web server
-    PubSubClient               # MQTT client
-    TFT_eSPI                   # TFT display control
-    DHT sensor library         # DHT11 sensor support
-    DallasTemperature          # DS18B20 sensor support
-    bblanchon/ArduinoJson@^7.3.0 # JSON parsing
-    OneWire                    # OneWire protocol
-    Preferences                # Non-volatile storage
+    WiFi                               # ESP32-S3 WiFi connectivity
+    Preferences                        # Non-volatile storage
+    adafruit/Adafruit AHTX0@^2.0.5    # AHT20 temp/humidity sensor
+    adafruit/Adafruit Unified Sensor@^1.1.4
+    paulstoffregen/OneWire@^2.3.7     # OneWire protocol for DS18B20
+    milesburton/DallasTemperature@^3.11.0 # DS18B20 sensor support
+    bodmer/TFT_eSPI@^2.5.43           # TFT display control
+    me-no-dev/AsyncTCP@^1.1.1         # Async TCP for ESP32
+    me-no-dev/ESPAsyncWebServer@^1.2.3 # Non-blocking web server
+    knolleary/PubSubClient@^2.8       # MQTT client
+    bblanchon/ArduinoJson@^6.21.3     # JSON parsing
 ```
 
 ### Library Configuration Notes
@@ -340,11 +342,11 @@ lib_deps =
 - **Pin Verification**: All pins verified from actual hardware schematic
 - **Monitor Command**: Use `pio device monitor --port /dev/ttyUSB0 --baud 115200` for diagnostic output
 
-### Configuration Files
-- `platformio.ini` - Custom TFT_eSPI build flags for ESP32-S3
-- `boards/esp32-s3-thermostat.json` - Custom board definition
-- `variants/esp32-s3-thermostat/pins_arduino.h` - Pin definitions
-- `default_16mb.csv` - Custom partition table
+### Configuration Files  
+- `platformio.ini` - Custom TFT_eSPI build flags for ESP32-S3 with 16MB flash config
+- Custom partition: `huge_app.csv` for optimal 16MB flash utilization
+- Flash allocation: 3.14MB app space (30.3% usage) vs previous 1.31MB (72.8%)
+- Board: `esp32-s3-devkitc-1` with custom flash size override
 
 This copilot configuration provides comprehensive context for AI-assisted development while maintaining the project's existing architecture and hardware-specific requirements.
 

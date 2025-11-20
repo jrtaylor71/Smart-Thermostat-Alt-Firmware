@@ -28,46 +28,52 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 ## 🚀 Quick Start
 
 ### Hardware Requirements
-- ESP32 WROOM-32 Development Board
-- ILI9341 320x240 TFT LCD Touch Display
-- DHT11 Temperature/Humidity Sensor
+- ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM) 
+- ILI9341 320x240 TFT LCD with XPT2046 Touch Controller
+- AHT20 Temperature/Humidity Sensor (I2C)
 - DS18B20 Temperature Sensor (optional, for hydronic heating)
 - 5x Relay Module for HVAC control
-- Custom PCB (files included) or breadboard for prototyping
+- Custom PCB by Stefan Meisner (files included)
 
 ### Software Setup
 1. Install [PlatformIO](https://platformio.org/) IDE
 2. Clone this repository
 3. Open project in PlatformIO
-4. Build and upload to ESP32
-5. Use touch interface to configure WiFi and settings
+4. Configuration optimized for ESP32-S3-WROOM-1-N16 (16MB flash)
+5. Flash utilization: 30.3% (3.14MB available with huge_app.csv partition)
+6. Build and upload to ESP32-S3
+7. Use touch interface to configure WiFi and settings
 
-### Pin Configuration
+### Pin Configuration (ESP32-S3)
 
-#### TFT Display
+#### TFT Display (ILI9341 + XPT2046 Touch)
 ```cpp
-#define TFT_MISO 19    // SPI MISO
-#define TFT_MOSI 23    // SPI MOSI
-#define TFT_SCLK 18    // SPI Clock
-#define TFT_CS   15    // Chip Select
-#define TFT_DC    2    // Data/Command
-#define TFT_RST  -1    // Reset (connected to ESP32 reset)
-#define TOUCH_CS  4    // Touch Chip Select
+#define TFT_MISO 21    // SPI MISO (shared with touch)
+#define TFT_MOSI 12    // SPI MOSI (shared with touch)
+#define TFT_SCLK 13    // SPI Clock (shared with touch)
+#define TFT_CS    9    // TFT Chip Select
+#define TFT_DC   11    // Data/Command
+#define TFT_RST  10    // Reset
+#define TFT_BL   14    // Backlight
+#define TOUCH_CS 47    // Touch Chip Select
+#define TOUCH_IRQ 48   // Touch Interrupt
 ```
 
 #### Sensors
 ```cpp
-#define DHTPIN 22           // DHT11 data pin
-#define ONE_WIRE_BUS 27     // DS18B20 data pin (optional)
+#define AHT20_SDA 36        // I2C SDA for AHT20
+#define AHT20_SCL 35        // I2C SCL for AHT20  
+#define ONE_WIRE_BUS 34     // DS18B20 data pin (optional)
+#define LIGHT_SENSOR 8      // Light sensor
 ```
 
 #### Relay Outputs
 ```cpp
-const int heatRelay1Pin = 13;   // Stage 1 heating
-const int heatRelay2Pin = 12;   // Stage 2 heating
-const int coolRelay1Pin = 14;   // Stage 1 cooling
-const int coolRelay2Pin = 26;   // Stage 2 cooling
-const int fanRelayPin = 25;     // Fan control
+const int heatRelay1Pin = 5;    // Stage 1 heating
+const int heatRelay2Pin = 7;    // Stage 2 heating
+const int coolRelay1Pin = 6;    // Stage 1 cooling
+const int coolRelay2Pin = 39;   // Stage 2 cooling
+const int fanRelayPin = 4;      // Fan control
 ```
 
 ## 💻 Web Interface
@@ -187,7 +193,9 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.0.5
+**Current Version**: 1.0.7
+- ESP32-S3-WROOM-1-N16 platform with 16MB flash optimization
+- Modern Material Design color scheme with enhanced readability
 - Complete thermostat functionality with Option C display system
 - Enhanced MQTT/Home Assistant integration with temperature precision
 - Professional PCB design (hardware by Stefan Meisner)
