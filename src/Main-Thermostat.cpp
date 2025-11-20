@@ -120,6 +120,30 @@ bool isEnteringSSID = true;
 // Add a new global flag to track WiFi setup mode
 bool inWiFiSetupMode = false;
 
+// Keyboard layout constants
+const char* KEYBOARD_UPPER[5][10] = {
+    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+    {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
+    {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
+    {"Z", "X", "C", "V", "B", "N", "M", "SPC", "CLR", "OK"},
+    {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+};
+
+const char* KEYBOARD_LOWER[5][10] = {
+    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+    {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+    {"a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL"},
+    {"z", "x", "c", "v", "b", "n", "m", "SPC", "CLR", "OK"},
+    {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+};
+
+// Keyboard layout constants
+const int KEY_WIDTH = 28;
+const int KEY_HEIGHT = 28;
+const int KEY_SPACING = 3;
+const int KEYBOARD_X_OFFSET = 15;
+const int KEYBOARD_Y_OFFSET = 75;
+
 // Dual-core task handle
 TaskHandle_t sensorTask;
 
@@ -167,7 +191,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "ESP32-Simple-Thermostat"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.7"; // Software version
+const String sw_version = "1.0.8"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -882,82 +906,95 @@ void drawKeyboard(bool isUpperCaseKeyboard)
     // Clear the entire screen first to prevent any overlapping elements
     tft.fillScreen(COLOR_BACKGROUND);
     
-    // Set text properties for the keyboard display
+    // Draw header with better styling
     tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
     tft.setTextSize(2);
-    tft.setCursor(0, 0);
+    tft.setCursor(10, 10);
     tft.println(isEnteringSSID ? "Enter SSID:" : "Enter Password:");
-    tft.setCursor(0, 30);
+    
+    // Draw input text area with border
+    tft.drawRect(5, 35, 310, 30, COLOR_TEXT);
+    tft.fillRect(6, 36, 308, 28, COLOR_BACKGROUND);
+    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+    tft.setTextSize(2);
+    tft.setCursor(10, 42);
     tft.println(inputText);
 
-    const char* keys[5][10];
-    if (isUpperCaseKeyboard)
-    {
-        const char* upperKeys[5][10] = {
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-            {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
-            {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
-            {"Z", "X", "C", "V", "B", "N", "M", "SPACE", "CLR", "OK"},
-            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
-        };
-        memcpy(keys, upperKeys, sizeof(upperKeys));
-    }
-    else
-    {
-        const char* lowerKeys[5][10] = {
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-            {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
-            {"a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL"},
-            {"z", "x", "c", "v", "b", "n", "m", "SPACE", "CLR", "OK"},
-            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
-        };
-        memcpy(keys, lowerKeys, sizeof(lowerKeys));
-    }
+    // Select keyboard layout
+    const char* (*keys)[10] = isUpperCaseKeyboard ? KEYBOARD_UPPER : KEYBOARD_LOWER;
 
-    int keyWidth = 25;  // Reduced by 10%
-    int keyHeight = 25; // Reduced by 10%
-    int xOffset = 18;   // Adjusted for reduced size
-    int yOffset = 81;   // Adjusted for reduced size
-
+    // Draw keyboard with improved styling
+    tft.setTextSize(1);
     for (int row = 0; row < 5; row++)
     {
         for (int col = 0; col < 10; col++)
         {
-            tft.drawRect(col * (keyWidth + 3) + xOffset, row * (keyHeight + 3) + yOffset, keyWidth, keyHeight, COLOR_TEXT);
-            tft.setCursor(col * (keyWidth + 3) + xOffset + 5, row * (keyHeight + 3) + yOffset + 5);
-            tft.print(keys[row][col]);
+            int x = col * (KEY_WIDTH + KEY_SPACING) + KEYBOARD_X_OFFSET;
+            int y = row * (KEY_HEIGHT + KEY_SPACING) + KEYBOARD_Y_OFFSET;
+            
+            // Choose key color based on function
+            uint16_t keyColor = COLOR_SECONDARY;
+            uint16_t textColor = TFT_BLACK;
+            
+            const char* keyLabel = keys[row][col];
+            if (strcmp(keyLabel, "DEL") == 0 || strcmp(keyLabel, "CLR") == 0) {
+                keyColor = COLOR_WARNING;
+            } else if (strcmp(keyLabel, "OK") == 0) {
+                keyColor = COLOR_SUCCESS;
+            } else if (strcmp(keyLabel, "SHIFT") == 0) {
+                keyColor = isUpperCaseKeyboard ? COLOR_PRIMARY : COLOR_ACCENT;
+            } else if (strcmp(keyLabel, "SPC") == 0) {
+                keyColor = COLOR_PRIMARY;
+            }
+            
+            // Draw key background
+            tft.fillRect(x, y, KEY_WIDTH, KEY_HEIGHT, keyColor);
+            tft.drawRect(x, y, KEY_WIDTH, KEY_HEIGHT, COLOR_TEXT);
+            
+            // Draw key label - center the text
+            tft.setTextColor(textColor);
+            int textWidth = strlen(keyLabel) * 6; // Approximate width
+            int textX = x + (KEY_WIDTH - textWidth) / 2;
+            int textY = y + (KEY_HEIGHT - 8) / 2;
+            tft.setCursor(textX, textY);
+            
+            // Special display for space key
+            if (strcmp(keyLabel, "SPC") == 0) {
+                tft.print("SPACE");
+            } else {
+                tft.print(keyLabel);
+            }
         }
     }
 }
 
 void handleKeyPress(int row, int col)
 {
-    const char* keys[5][10];
-    if (isUpperCaseKeyboard)
-    {
-        const char* upperKeys[5][10] = {
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-            {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
-            {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
-            {"Z", "X", "C", "V", "B", "N", "M", "SPACE", "CLR", "OK"},
-            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
-        };
-        memcpy(keys, upperKeys, sizeof(upperKeys));
-    }
-    else
-    {
-        const char* lowerKeys[5][10] = {
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-            {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
-            {"a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL"},
-            {"z", "x", "c", "v", "b", "n", "m", "SPACE", "CLR", "OK"},
-            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
-        };
-        memcpy(keys, lowerKeys, sizeof(lowerKeys));
-    }
-
+    // Get the appropriate keyboard layout
+    const char* (*keys)[10] = isUpperCaseKeyboard ? KEYBOARD_UPPER : KEYBOARD_LOWER;
     const char* keyLabel = keys[row][col];
 
+    // Provide visual feedback for key press
+    int x = col * (KEY_WIDTH + KEY_SPACING) + KEYBOARD_X_OFFSET;
+    int y = row * (KEY_HEIGHT + KEY_SPACING) + KEYBOARD_Y_OFFSET;
+    
+    // Flash the key white briefly for feedback
+    tft.fillRect(x, y, KEY_WIDTH, KEY_HEIGHT, TFT_WHITE);
+    tft.drawRect(x, y, KEY_WIDTH, KEY_HEIGHT, COLOR_TEXT);
+    tft.setTextColor(TFT_BLACK);
+    int textWidth = strlen(keyLabel) * 6;
+    int textX = x + (KEY_WIDTH - textWidth) / 2;
+    int textY = y + (KEY_HEIGHT - 8) / 2;
+    tft.setCursor(textX, textY);
+    tft.setTextSize(1);
+    if (strcmp(keyLabel, "SPC") == 0) {
+        tft.print("SPACE");
+    } else {
+        tft.print(keyLabel);
+    }
+    delay(100); // Brief visual feedback
+
+    // Handle key functionality
     if (strcmp(keyLabel, "DEL") == 0)
     {
         if (inputText.length() > 0)
@@ -965,9 +1002,11 @@ void handleKeyPress(int row, int col)
             inputText.remove(inputText.length() - 1);
         }
     }
-    else if (strcmp(keyLabel, "SPACE") == 0)
+    else if (strcmp(keyLabel, "SPC") == 0)
     {
-        inputText += " ";
+        if (inputText.length() < 30) { // Limit input length
+            inputText += " ";
+        }
     }
     else if (strcmp(keyLabel, "CLR") == 0)
     {
@@ -977,34 +1016,73 @@ void handleKeyPress(int row, int col)
     {
         if (isEnteringSSID)
         {
-            wifiSSID = inputText;
-            inputText = "";
-            isEnteringSSID = false;
-            drawKeyboard(isUpperCaseKeyboard);
+            if (inputText.length() > 0) {
+                wifiSSID = inputText;
+                inputText = "";
+                isEnteringSSID = false;
+                drawKeyboard(isUpperCaseKeyboard);
+                return; // Early return to avoid input update
+            }
         }
         else
         {
-            wifiPassword = inputText;
-            saveWiFiSettings();
-            WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-            unsigned long startAttemptTime = millis();
+            if (inputText.length() > 0) {
+                wifiPassword = inputText;
+                
+                // Show connection attempt message
+                tft.fillScreen(COLOR_BACKGROUND);
+                tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+                tft.setTextSize(2);
+                tft.setCursor(50, 100);
+                tft.println("Connecting...");
+                tft.setCursor(30, 130);
+                tft.println("Please wait");
+                
+                saveWiFiSettings();
+                WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+                unsigned long startAttemptTime = millis();
 
-            // Only try to connect for 10 seconds
-            while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
-            {
-                delay(1000);
-                Serial.println("Connecting to WiFi...");
-            }
+                // Try to connect for 10 seconds with progress indicator
+                int dots = 0;
+                while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
+                {
+                    delay(500);
+                    tft.setCursor(30 + (dots * 12), 160);
+                    tft.print(".");
+                    dots = (dots + 1) % 20;
+                    Serial.println("Connecting to WiFi...");
+                }
 
-            if (WiFi.status() == WL_CONNECTED)
-            {
-                Serial.println("Connected to WiFi");
-                delay(2000);
-                ESP.restart();
-            }
-            else
-            {
-                Serial.println("Failed to connect to WiFi");
+                if (WiFi.status() == WL_CONNECTED)
+                {
+                    tft.fillScreen(COLOR_BACKGROUND);
+                    tft.setCursor(50, 100);
+                    tft.setTextColor(COLOR_SUCCESS, COLOR_BACKGROUND);
+                    tft.println("Connected!");
+                    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+                    tft.setCursor(30, 130);
+                    tft.println("Restarting...");
+                    Serial.println("Connected to WiFi");
+                    delay(2000);
+                    ESP.restart();
+                }
+                else
+                {
+                    tft.fillScreen(COLOR_BACKGROUND);
+                    tft.setCursor(30, 100);
+                    tft.setTextColor(COLOR_WARNING, COLOR_BACKGROUND);
+                    tft.println("Failed to connect");
+                    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+                    tft.setCursor(30, 130);
+                    tft.println("Touch to retry");
+                    Serial.println("Failed to connect to WiFi");
+                    delay(3000);
+                    // Reset and return to keyboard
+                    inputText = "";
+                    isEnteringSSID = true;
+                    drawKeyboard(isUpperCaseKeyboard);
+                    return;
+                }
             }
         }
     }
@@ -1012,15 +1090,25 @@ void handleKeyPress(int row, int col)
     {
         isUpperCaseKeyboard = !isUpperCaseKeyboard;
         drawKeyboard(isUpperCaseKeyboard);
+        return; // Early return to avoid input update
     }
     else
     {
-        inputText += keyLabel;
+        // Add regular character if within length limit
+        if (inputText.length() < 30) {
+            inputText += keyLabel;
+        }
     }
 
-    tft.fillRect(0, 30, 320, 30, COLOR_BACKGROUND);
-    tft.setCursor(0, 30);
+    // Update input display
+    tft.fillRect(6, 36, 308, 28, COLOR_BACKGROUND);
+    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+    tft.setTextSize(2);
+    tft.setCursor(10, 42);
     tft.println(inputText);
+    
+    // Redraw the keyboard to restore normal key colors
+    drawKeyboard(isUpperCaseKeyboard);
 }
 
 void drawButtons()
@@ -2792,18 +2880,37 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
     {
         for (int col = 0; col < 10; col++)
         {
-            int keyWidth = 25;  // Reduced by 10%
-            int keyHeight = 25; // Reduced by 10%
-            int xOffset = 18;   // Adjusted for reduced size
-            int yOffset = 81;   // Adjusted for reduced size
+            // Use the same constants as the visual keyboard
+            int keyX = col * (KEY_WIDTH + KEY_SPACING) + KEYBOARD_X_OFFSET;
+            int keyY = row * (KEY_HEIGHT + KEY_SPACING) + KEYBOARD_Y_OFFSET;
+            
+            // Expand touch area by 15% to account for touch inaccuracy
+            int touchMargin = 4; // Extra pixels around each key for easier touching
+            int expandedX = keyX - touchMargin;
+            int expandedY = keyY - touchMargin;
+            int expandedWidth = KEY_WIDTH + (touchMargin * 2);
+            int expandedHeight = KEY_HEIGHT + (touchMargin * 2);
 
-            if (x > col * (keyWidth + 3) + xOffset && x < col * (keyWidth + 3) + xOffset + keyWidth &&
-                y > row * (keyHeight + 3) + yOffset && y < row * (keyHeight + 3) + yOffset + keyHeight)
+            if (x >= expandedX && x <= expandedX + expandedWidth &&
+                y >= expandedY && y <= expandedY + expandedHeight)
             {
-                Serial.print("Key pressed at row: ");
+                Serial.print("Touch at (");
+                Serial.print(x);
+                Serial.print(",");
+                Serial.print(y);
+                Serial.print(") -> Key[");
                 Serial.print(row);
-                Serial.print(", col: ");
-                Serial.println(col);
+                Serial.print(",");
+                Serial.print(col);
+                Serial.print("] KeyArea(");
+                Serial.print(keyX);
+                Serial.print(",");
+                Serial.print(keyY);
+                Serial.print(" ");
+                Serial.print(KEY_WIDTH);
+                Serial.print("x");
+                Serial.print(KEY_HEIGHT);
+                Serial.println(")");
                 
                 // Process the key press
                 handleKeyPress(row, col);
