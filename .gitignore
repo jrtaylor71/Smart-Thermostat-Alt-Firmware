@@ -2,3 +2,22 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+# Build artifacts and temporary files
+.pio/build/
+*.o
+*.d
+*.bin
+*.elf
+*.map
+*.a
+*.checksum
+.sconsign*
+
+# Backup and temporary files
+backup/
+*.backup*
+screenlog.*
+touch_*.cpp
+User_Setup.h
+default_*.csv
+*-original.*
