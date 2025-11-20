@@ -1,0 +1,3011 @@
+/*
+ * This file is part of ESP32-Simple-Thermostat.
+ *
+ * ESP32-Simple-Thermostat is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ESP32-Simple-Thermostat is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* Copyright (c) 2025 Jonn Taylor (jrtaylor@taylordatacom.com) */
+
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <Adafruit_AHTX0.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
+// TFT_eSPI provides built-in touch support
+#include <HTTPClient.h>
+#include <PubSubClient.h> // Include the MQTT library
+#include <esp_task_wdt.h> // Include the watchdog timer library
+#include <driver/gpio.h> // Include for GPIO drive capability control
+#include <driver/ledc.h> // Include for LEDC PWM buzzer control (like original)
+#include <time.h>
+#include <ArduinoJson.h> // Include the ArduinoJson library
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Update.h> // For OTA firmware update
+
+// Constants
+const int SECONDS_PER_HOUR = 3600;
+const int WDT_TIMEOUT = 60; // Watchdog timer timeout in seconds - increased to prevent reboots
+// AHT20 sensor connected via I2C (SDA=36, SCL=35 for ESP32-S3 smart-thermostat)
+#define BOOT_BUTTON 0 // Define the GPIO pin connected to the boot button
+
+// Settings for factory reset
+unsigned long bootButtonPressStart = 0; // When the boot button was pressed
+const unsigned long FACTORY_RESET_PRESS_TIME = 10000; // 10 seconds in milliseconds
+bool bootButtonPressed = false; // Track if boot button is being pressed
+
+// Dual-core task management
+TaskHandle_t backgroundTaskHandle = NULL;
+SemaphoreHandle_t displayMutex = NULL;
+#define TOUCH_CORE 0  // Core 0 for ultra-fast touch response
+#define BACKGROUND_CORE 1  // Core 1 for display updates, sensors, HVAC
+bool backgroundTaskRunning = false;
+
+// DS18B20 sensor setup (updated for ESP32-S3 smart-thermostat)
+#define ONE_WIRE_BUS 34 // Define the pin where the DS18B20 is connected
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature ds18b20(&oneWire);
+float hydronicTemp = 0.0;
+bool hydronicHeatingEnabled = false;
+
+// Hydronic heating settings
+float hydronicTempLow = 110.0; // Default low temperature for hydronic heating
+float hydronicTempHigh = 130.0; // Default high temperature for hydronic heating
+
+// Hybrid staging settings
+unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
+float stage2TempDelta = 2.0; // Default temperature delta for second stage activation
+unsigned long stage1StartTime = 0; // Time when stage 1 was activated
+bool stage1Active = false; // Flag to track if stage 1 is active
+bool stage2Active = false; // Flag to track if stage 2 is active
+bool stage2HeatingEnabled = false; // Enable/disable 2nd stage heating
+bool stage2CoolingEnabled = false; // Enable/disable 2nd stage cooling
+
+// Globals
+Adafruit_AHTX0 aht;
+AsyncWebServer server(80);
+TFT_eSPI tft = TFT_eSPI();
+// Touch functionality will be added later without library conflicts
+WiFiClient espClient;
+PubSubClient mqttClient(espClient); // Initialize the MQTT client
+Preferences preferences; // Preferences instance
+String inputText = "";
+bool isEnteringSSID = true;
+
+// Add a new global flag to track WiFi setup mode
+bool inWiFiSetupMode = false;
+
+// Touch priority mode - blocks background tasks for maximum responsiveness
+bool touchPriorityActive = false;
+
+// Touch handled via polling for maximum responsiveness
+
+// GPIO pins for relays (ESP32-S3 smart-thermostat configuration - FROM SCHEMATIC)
+const int heatRelay1Pin = 5;   // Heat Stage 1 - VERIFIED
+const int heatRelay2Pin = 7;   // Heat Stage 2 - CORRECTED from GPIO 6
+const int coolRelay1Pin = 6;   // Cool Stage 1 - CORRECTED from GPIO 7  
+const int coolRelay2Pin = 39;  // Cool Stage 2 - CORRECTED from GPIO 15
+const int fanRelayPin = 4;     // Fan Control - CORRECTED from GPIO 16
+
+// Settings
+float setTempHeat = 72.0; // Default set temperature for heating in Fahrenheit
+float setTempCool = 76.0; // Default set temperature for cooling in Fahrenheit
+float setTempAuto = 74.0; // Default set temperature for auto mode
+float tempSwing = 1.0;
+float autoTempSwing = 3.0;
+bool autoChangeover = true;
+bool fanRelayNeeded = false;
+bool useFahrenheit = true; // Default to Fahrenheit
+bool mqttEnabled = false; // Default to MQTT disabled
+String wifiSSID = "";
+String wifiPassword = "";
+int fanMinutesPerHour = 15;                                                                     // Default to 15 minutes per hour
+unsigned long lastFanRunTime = 0;                                                               // Time when the fan last ran
+unsigned long fanRunDuration = 0;                                                               // Duration for which the fan has run in the current hour
+unsigned long lastInteractionTime = 0;                                                          // Last interaction time
+const float tempDifferential = 4.0; // Fixed differential between heat and cool for auto changeover
+bool use24HourClock = true; // Default to 24-hour clock
+
+// MQTT settings
+String mqttServer = "0.0.0.0"; // Replace with your MQTT server
+int mqttPort = 1883;                    // Replace with your MQTT port
+String mqttUsername = "mqtt";  // Replace with your MQTT username
+String mqttPassword = "password";  // Replace with your MQTT password
+String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standard Time)
+
+// Add a preference for hostname
+String hostname = "ESP32-Simple-Thermostat"; // Default hostname
+String sw_version = "1.0.3"; // Default software version
+
+
+bool heatingOn = false;
+bool coolingOn = false;
+bool fanOn = false;
+String thermostatMode = "off"; // Default thermostat mode
+String fanMode = "auto"; // Default fan mode
+
+// Add these declarations at the beginning of the file or in the appropriate section for global variables
+bool settingsChanged = false;
+bool mqttCallbackActive = false;
+unsigned long lastMQTTMessageTime = 0;
+const unsigned long mqttDebounceTime = 1000; // 1 second debounce time
+
+bool tempHeatChanged = false;
+bool tempCoolChanged = false;
+bool tempSwingChanged = false;
+bool thermostatModeChanged = false;
+bool fanModeChanged = false;
+bool handlingMQTTMessage = false; // Add this flag
+
+// Add declarations to support hydronic temperature display and sensor error checking
+float previousHydronicTemp = 0.0;
+bool ds18b20SensorPresent = false;
+
+// Function prototypes
+void setupWiFi();
+void controlRelays(float currentTemp);
+void handleWebRequests();
+void updateDisplay(float currentTemp, float currentHumidity);
+void thermostatTask(void* parameter);
+void sensorTask(void* parameter);
+void saveSettings();
+void loadSettings();
+void setupMQTT();
+void reconnectMQTT();
+float convertCtoF(float celsius);
+void controlFanSchedule();
+void saveWiFiSettings();
+void drawKeyboard(bool isUpperCaseKeyboard);
+void handleKeyPress(int row, int col);
+void drawButtons();
+void handleButtonPress(uint16_t x, uint16_t y);
+void calibrateTouch();
+bool loadTouchCalibration();
+void saveTouchCalibration();
+void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard);
+void handleTouchInput();
+void handleFactoryResetButton(); 
+void controlHVACSystem();
+void readSensorsNonBlocking();
+void handleWiFiAndMQTT();
+void connectToWiFi();
+void enterWiFiCredentials();
+
+void restoreDefaultSettings();
+void checkBootButton();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void sendMQTTData();
+void publishHomeAssistantDiscovery();
+void turnOffAllRelays();
+void activateHeating();
+void activateCooling();
+void handleFanControl();
+
+uint16_t calibrationData[5] = { 300, 3700, 300, 3700, 7 }; // Example calibration data
+
+float currentTemp = 0.0;
+float currentHumidity = 0.0;
+bool isUpperCaseKeyboard = true;
+float previousTemp = 0.0;
+float previousHumidity = 0.0;
+float previousSetTemp = 0.0;
+bool firstHourAfterBoot = true; // Flag to track the first hour after bootup
+bool forceDisplayUpdate = false; // Flag to trigger immediate display update
+bool showModeSelection = false; // Flag to show/hide mode selection buttons
+bool showFanSelection = false; // Flag to show/hide fan selection buttons
+bool calibrationInProgress = false; // Flag to block all tasks during calibration
+
+// Diagnostic UART support
+void diagnosticPrint(const String& message) {
+    Serial.println(message);      // USB Serial for IDE
+    Serial1.println(message);     // Diagnostic UART
+}
+
+void diagnosticPrintf(const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    diagnosticPrint(String(buffer));
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    // Initialize diagnostic UART (TX=43, RX=44) for /dev/ttyUSB0 monitoring
+    Serial1.begin(115200, SERIAL_8N1, 44, 43);
+    
+    // Initialize 5V buzzer on GPIO17 through 2N7002 MOSFET
+    // ESP32-S3 GPIO17 (3.3V) -> 2N7002 gate -> switches 5V buzzer
+    pinMode(17, OUTPUT);
+    digitalWrite(17, LOW);
+    
+    // Set GPIO17 to maximum drive strength for better MOSFET gate drive
+    gpio_set_drive_capability((gpio_num_t)17, GPIO_DRIVE_CAP_3);
+    
+    // Test 5V buzzer with tone() function - COMMENTED OUT for faster boot
+    /*
+    diagnosticPrint("Testing 5V buzzer with tone() function");
+    tone(17, 1000, 1000);  // 1kHz tone for 1 second through MOSFET
+    delay(1100);           // Wait for tone to complete
+    
+    diagnosticPrint("5V buzzer tone() test complete");
+    */
+    
+    // TEMPORARILY DISABLE background task to test if dual-core is causing reboots
+    // Create synchronization primitives with error checking
+    displayMutex = xSemaphoreCreateMutex();
+    if (displayMutex == NULL) {
+        diagnosticPrint("Failed to create display mutex - using single core");
+    } else {
+        // Configure watchdog with longer timeout to prevent resets
+        esp_task_wdt_deinit(); // Deinit first to avoid conflicts
+        esp_task_wdt_init(60, true); // 60 second timeout
+        esp_task_wdt_add(NULL); // Add main task to watchdog
+        
+        // Longer delay to ensure system stability
+        delay(1000);
+        
+        // Create high-priority display/HVAC task
+        BaseType_t result1 = xTaskCreatePinnedToCore(
+            thermostatTask,     // Task function
+            "ThermostatTask",   // Task name
+            8192,               // Smaller stack - no sensor I2C
+            NULL,               // Parameters
+            2,                  // Higher priority for display updates
+            &backgroundTaskHandle, // Store task handle
+            1                   // Core 1 (core 0 for touch)
+        );
+        
+        // Create low-priority sensor task
+        BaseType_t result2 = xTaskCreatePinnedToCore(
+            sensorTask,         // Task function
+            "SensorTask",       // Task name
+            4096,               // Small stack for sensor reads
+            NULL,               // Parameters
+            1,                  // Lower priority - sensors change slowly
+            NULL,               // No handle needed
+            1                   // Core 1 (same core, different priority)
+        );
+        
+        if (result1 == pdPASS) {
+            diagnosticPrint("Thermostat task created successfully");
+        } else {
+            diagnosticPrint("ERROR: Failed to create thermostat task!");
+        }
+        
+        if (result2 == pdPASS) {
+            diagnosticPrint("Sensor task created successfully");
+        } else {
+            diagnosticPrint("ERROR: Failed to create sensor task!");
+        }
+    }
+    
+    diagnosticPrint("ESP32-S3 Smart Thermostat starting up...");
+    
+    // Skip startup buzzer test to eliminate delays during boot
+    diagnosticPrint("2N7002 MOSFET buzzer on GPIO17 initialized (test skipped for faster boot)");
+
+    // Initialize Preferences
+    preferences.begin("thermostat", false);
+    
+    loadSettings();
+
+    // Initialize I2C for AHT20 sensor (SDA=36, SCL=35 for ESP32-S3 smart-thermostat)
+    Wire.begin(36, 35);
+    diagnosticPrint("I2C initialized on SDA=36, SCL=35");
+    
+    // Scan I2C bus for devices
+    diagnosticPrint("Scanning I2C bus...");
+    int deviceCount = 0;
+    for (int address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() == 0) {
+            diagnosticPrint("I2C device found at 0x" + String(address, HEX));
+            deviceCount++;
+        }
+    }
+    diagnosticPrint("I2C scan complete - " + String(deviceCount) + " device(s) found");
+    
+    // Initialize the AHT20 sensor
+    if (!aht.begin()) {
+        diagnosticPrint("Could not find AHT20 sensor! Check wiring and I2C address (should be 0x38)");
+    } else {
+        diagnosticPrint("AHT20 sensor initialized successfully");
+    }
+
+    // Initialize DS18B20 sensor (optional)
+    ds18b20.begin();
+    diagnosticPrint("DS18B20 initialization started - detailed check will be done later");
+
+    // Initialize the TFT display
+    tft.init();
+    tft.setRotation(1); // Set the rotation of the display as needed
+    
+    // Add delay for display initialization to complete (was provided by buzzer test before)
+    delay(500); // Give display time to initialize properly
+    
+    // Touch calibration will be done AFTER backlight initialization
+    
+    // Initialize TFT backlight on GPIO14 - SIMPLE DIRECT DRIVE (no LEDC conflict)
+    diagnosticPrint("Setting up TFT backlight on GPIO14...");
+    pinMode(14, OUTPUT);
+    
+    // Force maximum drive strength for brighter backlight
+    gpio_set_drive_capability((gpio_num_t)14, GPIO_DRIVE_CAP_3);
+    
+    // Direct GPIO HIGH for backlight (no LEDC to avoid buzzer conflict)
+    digitalWrite(14, HIGH);   // Force backlight ON with direct GPIO
+    
+    diagnosticPrint("TFT backlight ON with direct GPIO drive - no LEDC conflicts");
+    
+    // Clear display to black (ready for thermostat interface)
+    tft.fillScreen(TFT_BLACK);
+    
+    // Brief delay for display to stabilize
+    delay(200);
+    
+    // Buzzer activation signal for display system (required for backlight activation)
+    diagnosticPrint("Activating display system with buzzer signal...");
+    tone(17, 4000, 125);  // Brief buzzer sound to activate display system
+    delay(200);
+
+    // Give the display time to update before initializing touch
+    delay(100);
+    
+    // Initialize touch pins properly first
+    pinMode(47, OUTPUT); // TOUCH_CS
+    digitalWrite(47, HIGH); // Deselect touch initially
+    pinMode(48, INPUT_PULLUP);  // TOUCH_IRQ with pullup
+    
+    // Setup touch IRQ pin for monitoring (polling mode for fast response)
+    pinMode(48, INPUT_PULLUP);  // TOUCH_IRQ pin with pullup
+    diagnosticPrint("TOUCH_IRQ pin configured for polling mode");
+    
+    // Initialize boot button for factory reset (GPIO0)
+    pinMode(BOOT_BUTTON, INPUT_PULLUP);
+    diagnosticPrint("Boot button initialized for factory reset (hold 5 seconds)");
+    
+    // Load existing calibration data if available
+    if (!loadTouchCalibration()) {
+        diagnosticPrint("No calibration data found - calibrating touch screen...");
+        calibrateTouch();
+    } else {
+        diagnosticPrint("Using existing touch calibration data");
+    }
+    diagnosticPrint("Touch screen initialization complete");
+    
+    // Test touch system basic functionality
+    diagnosticPrint("Testing touch system...");
+    for (int i = 0; i < 3; i++) {
+        uint16_t testX, testY;
+        bool touchWorking = tft.getTouch(&testX, &testY, 600);
+        diagnosticPrintf("Touch test %d: %s", i+1, touchWorking ? "detected" : "none");
+        delay(200);
+    }
+    diagnosticPrint("Touch system ready");
+
+    // Initialize relay pins
+    pinMode(heatRelay1Pin, OUTPUT);
+    pinMode(heatRelay2Pin, OUTPUT);
+    pinMode(coolRelay1Pin, OUTPUT);
+    pinMode(coolRelay2Pin, OUTPUT);
+    pinMode(fanRelayPin, OUTPUT);
+
+    // Ensure all relays are off during bootup
+    digitalWrite(heatRelay1Pin, LOW);
+    digitalWrite(heatRelay2Pin, LOW);
+    digitalWrite(coolRelay1Pin, LOW);
+    digitalWrite(coolRelay2Pin, LOW);
+    digitalWrite(fanRelayPin, LOW);
+
+    // Load WiFi credentials but don't force connection
+    diagnosticPrint("Loading WiFi preferences...");
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
+    hostname = preferences.getString("hostname", "ESP32-Simple-Thermostat");
+    diagnosticPrint("WiFi SSID: '" + wifiSSID + "' (length: " + String(wifiSSID.length()) + ")");
+    WiFi.setHostname(hostname.c_str()); // Set the WiFi device name
+    
+    // Clear the "Loading Settings..." message
+    diagnosticPrint("Clearing loading screen...");
+    // Don't clear screen here - let the display content persist
+    diagnosticPrint("Loading screen cleared");
+    
+    // Setup WiFi if credentials exist, but don't block if it fails
+    bool wifiConnected = false;
+    if (wifiSSID != "" && wifiPassword != "")
+    {
+        diagnosticPrint("WiFi credentials found - attempting connection...");
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        unsigned long startAttemptTime = millis();
+        
+        // Only try to connect for 5 seconds, allowing operation without WiFi
+        Serial.println("Attempting to connect to WiFi...");
+        diagnosticPrint("Attempting to connect to WiFi...");
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 5000)
+        {
+            delay(500);
+            Serial.print(".");
+        }
+        
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            Serial.println("\nConnected to WiFi");
+            wifiConnected = true;
+            
+            // Only start web server and MQTT if connected
+            handleWebRequests();
+            server.begin();
+            
+            if (mqttEnabled)
+            {
+                setupMQTT();
+                reconnectMQTT();
+            }
+        }
+        else
+        {
+            Serial.println("\nFailed to connect to WiFi. Will operate offline.");
+        }
+    }
+    else
+    {
+        Serial.println("No WiFi credentials found. Operating in offline mode.");
+        diagnosticPrint("No WiFi credentials found - skipping WiFi connection");
+    }
+    
+    lastInteractionTime = millis();
+
+    // Initialize buttons
+    drawButtons();
+
+    // Initialize time from NTP server only if WiFi is connected
+    if (wifiConnected)
+    {
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+        setenv("TZ", timeZone.c_str(), 1);
+        tzset();
+    }
+
+    // Read initial temperature and humidity from AHT20
+    diagnosticPrint("Reading initial temperature from AHT20...");
+    sensors_event_t humidity, temp;
+    aht.getEvent(&humidity, &temp);
+    currentTemp = useFahrenheit ? (temp.temperature * 9.0 / 5.0 + 32.0) : temp.temperature;
+    currentHumidity = humidity.relative_humidity;
+    diagnosticPrint("Temperature: " + String(currentTemp) + "°F, Humidity: " + String(currentHumidity) + "%");
+
+    // Setup display with initial thermostat interface (don't clear unnecessarily)
+    // Initial display update
+    updateDisplay(currentTemp, currentHumidity);
+
+    // Initialize the DS18B20 sensor (optional - already done in setup)
+    // Check if DS18B20 sensor is present with timeout
+    ds18b20.requestTemperatures();
+    unsigned long startTime = millis();
+    
+    // Wait for temperature reading with 2 second timeout
+    while (!ds18b20.isConversionComplete() && (millis() - startTime < 2000)) {
+        delay(10);
+    }
+    
+    float tempC = ds18b20.getTempCByIndex(0);
+    ds18b20SensorPresent = (tempC != DEVICE_DISCONNECTED_C && tempC != -127.0 && !isnan(tempC));
+    
+    if (ds18b20SensorPresent) {
+        diagnosticPrint("DS18B20 sensor detected - temperature: " + String(tempC) + "°C");
+    } else {
+        diagnosticPrint("DS18B20 sensor NOT detected - hydronic heating disabled");
+    }
+}
+
+// Background task for thermostat operations (runs on core 1)
+void thermostatTask(void* parameter) {
+    unsigned long lastDisplayUpdate = 0;
+    unsigned long lastHVACUpdate = 0;
+    
+    diagnosticPrint("Background thermostat task started on core 1");
+    backgroundTaskRunning = true;
+    
+    // Much longer initial delay to ensure main core is fully stable
+    diagnosticPrint("BG-Task: Starting 5 second delay...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    diagnosticPrint("BG-Task: Delay complete, entering main loop");
+    
+    while (true) {
+        // CRITICAL: Block during calibration
+        if (calibrationInProgress) {
+            vTaskDelay(pdMS_TO_TICKS(500)); // Wait during calibration
+            continue;
+        }
+        
+        // NO watchdog reset in background task - let main task handle it
+        unsigned long now = millis();
+        
+        // Debug: Show task is running every 10 seconds
+        static unsigned long lastTaskAlive = 0;
+        if (now - lastTaskAlive > 10000) {
+            diagnosticPrintf("BG-Task: Still running, forceDisplayUpdate=%s", forceDisplayUpdate ? "TRUE" : "FALSE");
+            lastTaskAlive = now;
+        }
+        
+        // PRIORITY 1: Check for immediate display updates first (before slow sensor reads)
+        unsigned long displayInterval = forceDisplayUpdate ? 0 : 2000; // Immediate if button pressed
+        if (forceDisplayUpdate) {
+            diagnosticPrint("BG-Task: forceDisplayUpdate flag DETECTED - immediate update");
+        }
+        if (now - lastDisplayUpdate > displayInterval) {
+            diagnosticPrint("BG-Task: Updating display...");
+            if (displayMutex != NULL && xSemaphoreTake(displayMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                updateDisplay(currentTemp, currentHumidity);
+                drawButtons();
+                xSemaphoreGive(displayMutex);
+                diagnosticPrint("BG-Task: Display updated successfully");
+                forceDisplayUpdate = false; // Clear the flag after successful update
+                diagnosticPrint("BG-Task: forceDisplayUpdate flag CLEARED");
+                lastDisplayUpdate = now;
+            } else {
+                diagnosticPrint("BG-Task: Display mutex busy - skipping this cycle");
+                lastDisplayUpdate = now; // Don't retry immediately, wait for next cycle
+            }
+        }
+        
+        // HVAC control every 30 seconds - very conservative
+        if (now - lastHVACUpdate > 30000) {
+            controlRelays(currentTemp);
+            lastHVACUpdate = now;
+        }
+        
+        // Variable delay - short when display update needed, longer otherwise
+        unsigned long taskDelay = forceDisplayUpdate ? 50 : 500; // 50ms if button pressed, 500ms normal
+        vTaskDelay(pdMS_TO_TICKS(taskDelay));
+    }
+}
+
+// Separate sensor task - runs independently from display updates
+void sensorTask(void* parameter) {
+    unsigned long lastSensorRead = 0;
+    
+    diagnosticPrint("Sensor task started on core 1 - low priority");
+    
+    // Initial delay to let main systems stabilize
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    
+    while (true) {
+        // CRITICAL: Block during calibration
+        if (calibrationInProgress) {
+            vTaskDelay(pdMS_TO_TICKS(500)); // Wait during calibration
+            continue;
+        }
+        
+        unsigned long now = millis();
+        
+        // Read sensors every 10 seconds - slow but independent
+        if (now - lastSensorRead > 10000) {
+            diagnosticPrint("Sensor-Task: Reading AHT20...");
+            sensors_event_t humidity, temp;
+            if (aht.getEvent(&humidity, &temp)) {
+                currentTemp = useFahrenheit ? (temp.temperature * 9.0 / 5.0 + 32.0) : temp.temperature;
+                currentHumidity = humidity.relative_humidity;
+                diagnosticPrintf("Sensor-Task: %.1fF, %.1f%%", currentTemp, currentHumidity);
+            } else {
+                diagnosticPrint("Sensor-Task: AHT20 read failed");
+            }
+            lastSensorRead = now;
+        }
+        
+        // Check boot button for factory reset
+        checkBootButton();
+        
+        // Long delay - sensors change slowly
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+void loop()
+{
+    // CPU 0 - ULTRA-FAST TOUCH ONLY
+    // Feed the watchdog timer for main task
+    esp_task_wdt_reset();
+
+    // ONLY touch input handling - zero interference
+    handleTouchInput();
+
+    // Minimal yield only
+    yield();
+}
+
+
+
+
+
+void setupWiFi()
+{
+    hostname = preferences.getString("hostname", "ESP32-Simple-Thermostat"); // Load hostname from preferences
+    WiFi.setHostname(hostname.c_str()); // Set the WiFi device name
+
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
+
+    if (wifiSSID != "" && wifiPassword != "")
+    {
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        unsigned long startAttemptTime = millis();
+
+        // Only try to connect for 10 seconds
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
+        {
+            delay(1000);
+            Serial.println("Connecting to WiFi...");
+        }
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            Serial.println("Connected to WiFi");
+        }
+        else
+        {
+            Serial.println("Failed to connect to WiFi");
+            enterWiFiCredentials();
+        }
+    }
+    else
+    {
+        // No WiFi credentials found, prompt user to enter them via touch screen
+        Serial.println("No WiFi credentials found. Please enter them via the touch screen.");
+        enterWiFiCredentials();
+    }
+}
+
+void connectToWiFi()
+{
+    if (wifiSSID != "" && wifiPassword != "")
+    {
+        Serial.print("Connecting to WiFi with SSID: ");
+        Serial.println(wifiSSID);
+        Serial.print("Password: ");
+        Serial.println(wifiPassword);
+
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        unsigned long startAttemptTime = millis();
+
+        // Only try to connect for 10 seconds
+        while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
+        {
+            delay(1000);
+            Serial.println("Connecting to WiFi...");
+        }
+
+        if (WiFi.status() == WL_CONNECTED)
+        {
+            Serial.println("Connected to WiFi");
+        }
+        else
+        {
+            Serial.println("Failed to connect to WiFi");
+            // Don't enter WiFi credentials mode here, just return
+            // This allows the device to keep operating without WiFi
+        }
+    }
+    else
+    {
+        // Having no credentials is fine - don't trigger WiFi setup automatically
+        Serial.println("No WiFi credentials found. Device operating in offline mode.");
+        // Note: User can press the WiFi button on the display to configure WiFi if desired
+    }
+}
+
+void enterWiFiCredentials()
+{
+    // Make sure we clear the screen completely before drawing the keyboard
+    tft.fillScreen(TFT_BLACK);
+    
+    // Reset input text and set initial state to entering SSID
+    inputText = "";
+    isEnteringSSID = true;
+    
+    // Draw the keyboard with the screen freshly cleared
+    drawKeyboard(isUpperCaseKeyboard);
+    
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        // No delays - just yield to prevent watchdog resets
+        yield();
+        
+        // Periodically print status message
+        static unsigned long lastStatusPrint = 0;
+        unsigned long currentTime = millis();
+        if (currentTime - lastStatusPrint > 5000) {
+            Serial.println("Waiting for WiFi credentials...");
+            lastStatusPrint = currentTime;
+        }
+    }
+}
+
+void drawKeyboard(bool isUpperCaseKeyboard)
+{
+    // Clear the entire screen first to prevent any overlapping elements
+    tft.fillScreen(TFT_BLACK);
+    
+    // Set text properties for the keyboard display
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(0, 0);
+    tft.println(isEnteringSSID ? "Enter SSID:" : "Enter Password:");
+    tft.setCursor(0, 30);
+    tft.println(inputText);
+
+    const char* keys[5][10];
+    if (isUpperCaseKeyboard)
+    {
+        const char* upperKeys[5][10] = {
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+            {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
+            {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
+            {"Z", "X", "C", "V", "B", "N", "M", "SPACE", "CLR", "OK"},
+            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+        };
+        memcpy(keys, upperKeys, sizeof(upperKeys));
+    }
+    else
+    {
+        const char* lowerKeys[5][10] = {
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+            {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+            {"a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL"},
+            {"z", "x", "c", "v", "b", "n", "m", "SPACE", "CLR", "OK"},
+            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+        };
+        memcpy(keys, lowerKeys, sizeof(lowerKeys));
+    }
+
+    int keyWidth = 25;  // Reduced by 10%
+    int keyHeight = 25; // Reduced by 10%
+    int xOffset = 18;   // Adjusted for reduced size
+    int yOffset = 81;   // Adjusted for reduced size
+
+    for (int row = 0; row < 5; row++)
+    {
+        for (int col = 0; col < 10; col++)
+        {
+            tft.drawRect(col * (keyWidth + 3) + xOffset, row * (keyHeight + 3) + yOffset, keyWidth, keyHeight, TFT_WHITE);
+            tft.setCursor(col * (keyWidth + 3) + xOffset + 5, row * (keyHeight + 3) + yOffset + 5);
+            tft.print(keys[row][col]);
+        }
+    }
+}
+
+void handleKeyPress(int row, int col)
+{
+    const char* keys[5][10];
+    if (isUpperCaseKeyboard)
+    {
+        const char* upperKeys[5][10] = {
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+            {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
+            {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
+            {"Z", "X", "C", "V", "B", "N", "M", "SPACE", "CLR", "OK"},
+            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+        };
+        memcpy(keys, upperKeys, sizeof(upperKeys));
+    }
+    else
+    {
+        const char* lowerKeys[5][10] = {
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+            {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+            {"a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL"},
+            {"z", "x", "c", "v", "b", "n", "m", "SPACE", "CLR", "OK"},
+            {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+        };
+        memcpy(keys, lowerKeys, sizeof(lowerKeys));
+    }
+
+    const char* keyLabel = keys[row][col];
+
+    if (strcmp(keyLabel, "DEL") == 0)
+    {
+        if (inputText.length() > 0)
+        {
+            inputText.remove(inputText.length() - 1);
+        }
+    }
+    else if (strcmp(keyLabel, "SPACE") == 0)
+    {
+        inputText += " ";
+    }
+    else if (strcmp(keyLabel, "CLR") == 0)
+    {
+        inputText = "";
+    }
+    else if (strcmp(keyLabel, "OK") == 0)
+    {
+        if (isEnteringSSID)
+        {
+            wifiSSID = inputText;
+            inputText = "";
+            isEnteringSSID = false;
+            drawKeyboard(isUpperCaseKeyboard);
+        }
+        else
+        {
+            wifiPassword = inputText;
+            saveWiFiSettings();
+            WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+            unsigned long startAttemptTime = millis();
+
+            // Only try to connect for 10 seconds
+            while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000)
+            {
+                delay(1000);
+                Serial.println("Connecting to WiFi...");
+            }
+
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                Serial.println("Connected to WiFi");
+                delay(2000);
+                ESP.restart();
+            }
+            else
+            {
+                Serial.println("Failed to connect to WiFi");
+            }
+        }
+    }
+    else if (strcmp(keyLabel, "SHIFT") == 0)
+    {
+        isUpperCaseKeyboard = !isUpperCaseKeyboard;
+        drawKeyboard(isUpperCaseKeyboard);
+    }
+    else
+    {
+        inputText += keyLabel;
+    }
+
+    tft.fillRect(0, 30, 320, 30, TFT_BLACK);
+    tft.setCursor(0, 30);
+    tft.println(inputText);
+}
+
+void drawButtons()
+{
+    // Draw the "+" button
+    tft.fillRect(270, 200, 40, 40, TFT_GREEN);
+    tft.setCursor(285, 215);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("+");
+
+    // Move the "-" button to the far bottom left corner
+    tft.fillRect(0, 200, 40, 40, TFT_RED);
+    tft.setCursor(15, 215);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("-");
+
+    // Draw the WiFi settings button between minus and mode buttons
+    tft.fillRect(50, 200, 65, 40, TFT_CYAN);
+    tft.setCursor(60, 215);
+    tft.setTextColor(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.print("Setup");
+
+    // Draw main MODE button showing current mode (toggles mode selection visibility)
+    tft.fillRect(125, 200, 60, 40, TFT_PURPLE);
+    
+    // Display current mode on the button
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    String modeText = thermostatMode;
+    modeText.toUpperCase();
+    diagnosticPrint("Drawing mode button text: " + modeText);
+    int textWidth = modeText.length() * 12; // Approximate width for size 2
+    int textX = 155 - (textWidth / 2); // Center text
+    tft.setCursor(textX, 215);
+    tft.print(modeText);
+    
+    // Only show mode selection buttons when showModeSelection is true
+    diagnosticPrintf("drawButtons: showModeSelection = %d", showModeSelection);
+    if (showModeSelection) {
+        diagnosticPrint("DRAWING MODE SELECTION BUTTONS AT Y=150");
+        // Draw horizontal mode selection buttons below main buttons
+        // Position them at Y=150 to match fan selection (mutually exclusive)
+        
+        // AUTO button - moved to Y=150 for visibility
+        uint16_t autoColor = (thermostatMode == "auto") ? TFT_GREEN : TFT_DARKGREY;
+        tft.fillRect(15, 150, 70, 30, autoColor);
+        tft.drawRect(15, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(35, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("AUTO");
+        
+        // HEAT button - moved to Y=150 for visibility
+        uint16_t heatColor = (thermostatMode == "heat") ? TFT_RED : TFT_DARKGREY;
+        tft.fillRect(90, 150, 70, 30, heatColor);
+        tft.drawRect(90, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(110, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("HEAT");
+        
+        // COOL button - moved to Y=150 for visibility
+        uint16_t coolColor = (thermostatMode == "cool") ? TFT_BLUE : TFT_DARKGREY;
+        tft.fillRect(165, 150, 70, 30, coolColor);
+        tft.drawRect(165, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(185, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("COOL");
+        
+        // OFF button - moved to Y=150 for visibility
+        uint16_t offColor = (thermostatMode == "off") ? TFT_YELLOW : TFT_DARKGREY;
+        tft.fillRect(240, 150, 70, 30, offColor);
+        tft.drawRect(240, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(260, 160);
+        tft.setTextColor(TFT_BLACK);
+        tft.setTextSize(2);
+        tft.print("OFF");
+    }
+    
+    // Clear mode selection area only when transitioning from shown to hidden
+    static bool wasModeSelectionShown = false;
+    if (wasModeSelectionShown && !showModeSelection) {
+        diagnosticPrint("CLEARING mode selection area at Y=145-185");
+        tft.fillRect(10, 145, 310, 40, TFT_BLACK);
+    }
+    wasModeSelectionShown = showModeSelection;
+
+    // Draw the fan mode button showing current fan mode
+    tft.fillRect(195, 200, 65, 40, TFT_ORANGE);
+    
+    // Display current fan mode on the button
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    String fanText = fanMode;
+    fanText.toUpperCase();
+    int fanTextWidth = fanText.length() * 12; // Approximate width for size 2
+    int fanTextX = 227 - (fanTextWidth / 2); // Center text
+    tft.setCursor(fanTextX, 215);
+    tft.print(fanText);
+
+    // Add the word "FAN" above the fan mode button
+    tft.setCursor(210, 180); // Adjusted y-coordinate to move the text up
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("FAN");
+
+    // Add the word "MODE" above the mode button
+    tft.setCursor(140, 180); // Adjusted y-coordinate to move the text up
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("MODE");
+
+    // Add "WIFI" label above the WiFi button
+    tft.setCursor(60, 180); // Positioned above the WiFi button
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.print("WIFI");
+    
+    // Only show fan selection buttons when showFanSelection is true
+    if (showFanSelection) {
+        diagnosticPrint("DRAWING FAN SELECTION BUTTONS AT Y=150");
+        diagnosticPrint("FAN BUTTON POSITIONS: AUTO(15-85), ON(90-160), CYCLE(165-255)");
+        // Draw horizontal fan selection buttons at same position as mode selection
+        // Position them at Y=150 (same as mode selection since they're mutually exclusive)
+        
+        // AUTO fan button - at Y=150 to match mode selection
+        uint16_t autoFanColor = (fanMode == "auto") ? TFT_GREEN : TFT_DARKGREY;
+        tft.fillRect(15, 150, 70, 30, autoFanColor);
+        tft.drawRect(15, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(35, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("AUTO");
+        
+        // ON fan button - at Y=150 to match mode selection
+        uint16_t onFanColor = (fanMode == "on") ? TFT_RED : TFT_DARKGREY;
+        tft.fillRect(90, 150, 70, 30, onFanColor);
+        tft.drawRect(90, 150, 70, 30, TFT_WHITE);
+        tft.setCursor(115, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("ON");
+        
+        // CYCLE fan button - at Y=150 to match mode selection
+        uint16_t cycleFanColor = (fanMode == "cycle") ? TFT_BLUE : TFT_DARKGREY;
+        tft.fillRect(165, 150, 90, 30, cycleFanColor);
+        tft.drawRect(165, 150, 90, 30, TFT_WHITE);
+        tft.setCursor(185, 160);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.print("CYCLE");
+    }
+    
+    // Clear fan selection area only when transitioning from shown to hidden
+    static bool wasFanSelectionShown = false;
+    if (wasFanSelectionShown && !showFanSelection) {
+        tft.fillRect(10, 145, 310, 40, TFT_BLACK);
+    }
+    wasFanSelectionShown = showFanSelection;
+}
+
+void handleButtonPress(uint16_t x, uint16_t y)
+{
+    diagnosticPrintf("Touch at X=%d, Y=%d", x, y);
+    
+    // Fan selection touches should work at their actual drawn positions (Y=150-180)
+    // No coordinate adjustment needed if calibration is working correctly
+    
+    // Simple debounce mechanism to prevent multiple triggers
+    static unsigned long lastButtonPressTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Simple 100ms debounce - no progressive delays
+    if (currentTime - lastButtonPressTime < 100) {
+        return; // Skip this press - too rapid
+    }
+    
+    lastButtonPressTime = currentTime;
+    
+    // WiFi setup button - DISABLED to prevent accidental triggers during testing
+    if (x >= 40 && x <= 100 && y >= 220 && y <= 270) // WiFi setup button (narrowed to avoid MODE overlap)
+    {
+        if (inWiFiSetupMode) {
+            // Cancel WiFi setup and return to main screen
+            inWiFiSetupMode = false;
+            tft.fillScreen(TFT_BLACK);
+            updateDisplay(currentTemp, currentHumidity);
+            drawButtons();
+            return;
+        }
+        
+        // Handle WiFi setup button press - enter WiFi setup mode
+        inWiFiSetupMode = true;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+        tft.setCursor(10, 10);
+        tft.println("WiFi Setup");
+        
+        // Reset entering state to SSID first
+        inputText = "";
+        isEnteringSSID = true;
+        
+        // Draw keyboard for WiFi setup
+        drawKeyboard(isUpperCaseKeyboard);
+        return;
+    }
+    
+    // If in WiFi setup mode, don't process other buttons
+    if (inWiFiSetupMode) {
+        return;
+    }
+    
+    // Increase the touchable area slightly to make buttons easier to hit
+    
+    // "+" button
+    if (x >= 270 && x <= 310 && y >= 200 && y <= 240) // "+" button - FIXED coordinates
+    {
+        if (thermostatMode == "heat")
+        {
+            setTempHeat += 0.5;
+            if (setTempHeat > 95) setTempHeat = 95;
+            if (setTempHeat < 50) setTempHeat = 50;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempCool = setTempHeat + tempDifferential;
+                // MQTT moved to background for responsiveness
+            }
+            // MQTT moved to background for responsiveness
+        }
+        else if (thermostatMode == "cool")
+        {
+            setTempCool += 0.5;
+            if (setTempCool > 95) setTempCool = 95;
+            if (setTempCool < 50) setTempCool = 50;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempHeat = setTempCool - tempDifferential;
+                // MQTT moved to background for responsiveness
+            }
+            // MQTT moved to background for responsiveness
+        }
+        else if (thermostatMode == "auto")
+        {
+            setTempAuto += 0.5;
+            if (setTempAuto > 95) setTempAuto = 95;
+            if (setTempAuto < 50) setTempAuto = 50;
+            // MQTT moved to background for responsiveness
+        }
+        diagnosticPrintf("+ BUTTON: Mode=%s, Temp=%.1f", thermostatMode.c_str(), 
+                        (thermostatMode == "heat") ? setTempHeat : 
+                        (thermostatMode == "cool") ? setTempCool : setTempAuto);
+        // Force immediate display update by triggering background task
+        forceDisplayUpdate = true;
+        diagnosticPrint("+ BUTTON: forceDisplayUpdate flag SET");
+        return; // Exit immediately after + button to prevent fallthrough
+    }
+    else if (x >= 0 && x <= 40 && y >= 200 && y <= 240) // "-" button - FIXED coordinates
+    {
+        if (thermostatMode == "heat")
+        {
+            setTempHeat -= 0.5;
+            if (setTempHeat > 95) setTempHeat = 95;
+            if (setTempHeat < 50) setTempHeat = 50;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempCool = setTempHeat + tempDifferential;
+                // MQTT moved to background for responsiveness
+            }
+            // MQTT moved to background for responsiveness
+        }
+        else if (thermostatMode == "cool")
+        {
+            setTempCool -= 0.5;
+            if (setTempCool > 95) setTempCool = 95;
+            if (setTempCool < 50) setTempCool = 50;
+            if (thermostatMode == "auto" && setTempCool - setTempHeat < tempDifferential)
+            {
+                setTempHeat = setTempCool - tempDifferential;
+                // MQTT moved to background for responsiveness
+            }
+            // MQTT moved to background for responsiveness
+        }
+        else if (thermostatMode == "auto")
+        {
+            setTempAuto -= 0.5;
+            if (setTempAuto > 95) setTempAuto = 95;
+            if (setTempAuto < 50) setTempAuto = 50;
+            // MQTT moved to background for responsiveness
+        }
+        diagnosticPrintf("- BUTTON: Mode=%s, Temp=%.1f", thermostatMode.c_str(), 
+                        (thermostatMode == "heat") ? setTempHeat : 
+                        (thermostatMode == "cool") ? setTempCool : setTempAuto);
+        // Force immediate display update by triggering background task
+        forceDisplayUpdate = true;
+        diagnosticPrint("- BUTTON: forceDisplayUpdate flag SET");
+        return; // Exit immediately after - button to prevent fallthrough
+    }
+    // MODE button (toggles mode selection visibility) - expanded coordinates for reliable detection
+    else if (x >= 100 && x <= 200 && y >= 200 && y <= 250) // MODE button (expanded)
+    {
+        showModeSelection = !showModeSelection; // Toggle mode selection visibility
+        showFanSelection = false; // Hide fan selection when showing mode selection
+        diagnosticPrintf("MODE BUTTON pressed - selection now %s (flag value: %d)", showModeSelection ? "SHOWN" : "HIDDEN", showModeSelection);
+        forceDisplayUpdate = true;
+        diagnosticPrint("MODE BUTTON: forceDisplayUpdate flag SET");
+        return;
+    }
+    // Individual mode selection buttons (horizontal row) - only when visible
+    // Updated coordinates for buttons at Y=150-180
+    else if (showModeSelection && x < 320 && y >= 150 && y <= 180) {
+        diagnosticPrintf("MODE SELECTION TOUCH at X=%d, Y=%d", x, y);
+        if (x >= 15 && x <= 85) // AUTO mode button
+        {
+            thermostatMode = "auto";
+            showModeSelection = false; // Hide mode selection after choice
+            diagnosticPrint("AUTO MODE selected - hiding mode selection");
+            saveSettings(); // Save mode change to preferences
+            forceDisplayUpdate = true;
+            diagnosticPrint("AUTO MODE: forceDisplayUpdate flag SET");
+            return;
+        }
+        else if (x >= 90 && x <= 160) // HEAT mode button
+        {
+            diagnosticPrint("CHANGING MODE FROM: " + thermostatMode + " TO: heat");
+            thermostatMode = "heat";
+            showModeSelection = false; // Hide mode selection after choice
+            diagnosticPrint("HEAT MODE selected - hiding mode selection");
+            saveSettings(); // Save mode change to preferences
+            forceDisplayUpdate = true;
+            diagnosticPrint("HEAT MODE: forceDisplayUpdate flag SET");
+            return;
+        }
+        else if (x >= 165 && x <= 235) // COOL mode button
+        {
+            diagnosticPrint("CHANGING MODE FROM: " + thermostatMode + " TO: cool");
+            thermostatMode = "cool";
+            showModeSelection = false; // Hide mode selection after choice
+            diagnosticPrint("COOL MODE selected - hiding mode selection");
+            saveSettings(); // Save mode change to preferences
+            forceDisplayUpdate = true;
+            diagnosticPrint("COOL MODE: forceDisplayUpdate flag SET");
+            return;
+        }
+        else if (x >= 240 && x <= 310) // OFF mode button
+        {
+            thermostatMode = "off";
+            showModeSelection = false; // Hide mode selection after choice
+            diagnosticPrint("OFF MODE selected - hiding mode selection");
+            saveSettings(); // Save mode change to preferences
+            forceDisplayUpdate = true;
+            diagnosticPrint("OFF MODE: forceDisplayUpdate flag SET");
+            return;
+        }
+    }
+    // FAN button (toggles fan selection visibility) - expanded coordinates for reliable detection
+    else if (x >= 200 && x <= 280 && y >= 200 && y <= 250) // FAN button (expanded to catch X=230)
+    {
+        showFanSelection = !showFanSelection; // Toggle fan selection visibility
+        showModeSelection = false; // Hide mode selection when showing fan selection
+        diagnosticPrintf("FAN BUTTON pressed - selection now %s", showFanSelection ? "SHOWN" : "HIDDEN");
+        forceDisplayUpdate = true;
+        diagnosticPrint("FAN BUTTON: forceDisplayUpdate flag SET");
+        return;
+    }
+    // Individual fan selection buttons (horizontal row) - only when visible and NOT mode selection
+    // Exact coordinates matching drawn buttons: AUTO(15-85), ON(90-160), CYCLE(165-255) at Y=150-180
+    else if (showFanSelection && !showModeSelection && y >= 150 && y <= 180) {
+        diagnosticPrintf("Touch in fan selection area Y=%d (150-180), X=%d", y, x);
+        diagnosticPrintf("FAN SELECTION TOUCH at X=%d, Y=%d", x, y);
+        if (x >= 15 && x <= 85) // AUTO: 15+70=85
+        {
+            diagnosticPrint("CHANGING FAN FROM: " + fanMode + " TO: auto");
+            fanMode = "auto";
+            showFanSelection = false;
+            diagnosticPrint("AUTO FAN selected - hiding fan selection");
+            saveSettings();
+            forceDisplayUpdate = true;
+            return;
+        }
+        else if (x >= 90 && x <= 160) // ON: 90+70=160
+        {
+            diagnosticPrint("CHANGING FAN FROM: " + fanMode + " TO: on");
+            fanMode = "on";
+            showFanSelection = false;
+            diagnosticPrint("ON FAN selected - hiding fan selection");
+            saveSettings();
+            forceDisplayUpdate = true;
+            return;
+        }
+        else if (x >= 165 && x <= 255) // CYCLE: 165+90=255
+        {
+            diagnosticPrint("CHANGING FAN FROM: " + fanMode + " TO: cycle");
+            fanMode = "cycle";
+            showFanSelection = false;
+            diagnosticPrint("CYCLE FAN selected - hiding fan selection");
+            saveSettings();
+            forceDisplayUpdate = true;
+            return;
+        }
+        else {
+            diagnosticPrintf("FAN SELECTION: No button at X=%d", x);
+        }
+    }
+    
+    // Debug: Log unhandled touches to help identify missed buttons
+    diagnosticPrintf("UNHANDLED TOUCH: X=%d, Y=%d - no button matched", x, y);
+}
+
+// Touch calibration functions based on TFT_eSPI recommendations
+void calibrateTouch() {
+    uint16_t calData[5];
+    uint8_t calDataOK = 0;
+
+    // CRITICAL: Block ALL background tasks during calibration
+    calibrationInProgress = true;
+    diagnosticPrint("CALIBRATION: Blocking all background tasks - calibrationInProgress = true");
+    
+    // SAVE ORIGINAL DISPLAY SETTINGS to restore after calibration
+    uint8_t originalFont = tft.textfont; // Get current font
+    uint8_t originalTextSize = tft.textsize; // Get current text size
+    diagnosticPrintf("CALIBRATION: Saved original display settings (font=%d, textSize=%d)", originalFont, originalTextSize);
+    
+    // CRITICAL: Ensure backlight is ON for calibration visibility
+    digitalWrite(14, HIGH); // Turn on backlight
+    diagnosticPrint("Calibration: Backlight turned ON");
+    
+    // CRITICAL: Set rotation to 1 to match application rotation
+    // Touch coordinates are only valid for the rotation used during calibration
+    tft.setRotation(1);
+    diagnosticPrint("Calibration: Rotation set to 1 to match application");
+    
+    // Ensure display is ready and stable
+    delay(1000);
+    
+    // Clear screen with bright background for visibility
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(20, 20);
+    tft.setTextFont(2);      // Temporary font for calibration
+    tft.setTextSize(1);      // Temporary size for calibration
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.println("TOUCH CALIBRATION");
+    tft.println("");
+    tft.println("Touch each corner");
+    tft.println("precisely when");
+    tft.println("crosshairs appear");
+    tft.println("");
+    tft.println("STAY STEADY!");
+    
+    // Give user time to read and prepare
+    delay(3000);
+    
+    diagnosticPrint("CALIBRATION: Starting calibration process...");
+    
+    // Calibrate with high contrast colors and precise crosshairs
+    tft.calibrateTouch(calData, TFT_RED, TFT_WHITE, 8);
+
+    diagnosticPrint("CALIBRATION: Calibration process completed");
+    
+    // Show completion with bright colors
+    tft.fillScreen(TFT_GREEN);
+    tft.setCursor(20, 50);
+    tft.setTextColor(TFT_BLACK, TFT_GREEN);
+    tft.setTextSize(2);
+    tft.println("CALIBRATION");
+    tft.println("COMPLETE!");
+    tft.println("");
+    tft.setTextSize(1);
+    tft.println("Saving data...");
+
+    // Store calibration data in preferences
+    preferences.begin("thermostat", false);
+    preferences.putBytes("touchCal", calData, 10);
+    preferences.putBool("touchCalOK", true);
+    preferences.end();
+    
+    diagnosticPrintf("Touch calibration stored: [%d, %d, %d, %d, %d]", 
+                    calData[0], calData[1], calData[2], calData[3], calData[4]);
+
+    tft.println("Data saved!");
+    tft.println("");
+    tft.println("Touch anywhere");
+    tft.println("to continue...");
+    
+    // Wait for touch to continue - but with timeout
+    uint16_t touchX, touchY;
+    unsigned long startTime = millis();
+    bool touchDetected = false;
+    
+    while (!touchDetected && (millis() - startTime < 10000)) { // 10 second timeout
+        touchDetected = tft.getTouch(&touchX, &touchY);
+        esp_task_wdt_reset(); // Feed watchdog during calibration wait
+        delay(100);
+    }
+    
+    if (touchDetected) {
+        diagnosticPrint("CALIBRATION: User touched to continue");
+    } else {
+        diagnosticPrint("CALIBRATION: Timeout - continuing automatically");
+    }
+
+    tft.fillScreen(TFT_BLACK);
+    
+    // CRITICAL: Restore original display settings 
+    tft.setTextFont(originalFont);      // Restore actual original font
+    tft.setTextSize(originalTextSize);  // Restore actual original text size  
+    tft.setTextColor(TFT_WHITE, TFT_BLACK); // Restore normal colors
+    diagnosticPrintf("CALIBRATION: Display settings restored to original (font=%d, textSize=%d)", originalFont, originalTextSize);
+    
+    // Re-enable background tasks
+    calibrationInProgress = false;
+    diagnosticPrint("CALIBRATION: Complete - calibrationInProgress = false, resuming normal operation");
+}
+
+bool loadTouchCalibration() {
+    preferences.begin("thermostat", true);
+    bool calOK = preferences.getBool("touchCalOK", false);
+    
+    if (calOK) {
+        uint16_t calData[5];
+        size_t len = preferences.getBytesLength("touchCal");
+        diagnosticPrintf("Calibration data length: %d bytes (expected 10)", len);
+        if (len == 10) {
+            preferences.getBytes("touchCal", calData, len);
+            diagnosticPrintf("Loaded calibration: [%d, %d, %d, %d, %d]", 
+                            calData[0], calData[1], calData[2], calData[3], calData[4]);
+            tft.setTouch(calData);
+            diagnosticPrint("Touch calibration loaded and applied successfully");
+            preferences.end();
+            return true;
+        } else {
+            diagnosticPrintf("Invalid calibration data length: %d", len);
+        }
+    } else {
+        diagnosticPrint("touchCalOK flag is false - no valid calibration");
+    }
+    preferences.end();
+    diagnosticPrint("No valid touch calibration found");
+    return false;
+}
+
+void setupMQTT()
+{
+    mqttClient.setServer(mqttServer.c_str(), mqttPort);
+    mqttClient.setBufferSize(1024); // Ensure buffer size is sufficient for large payloads
+    mqttClient.setCallback(mqttCallback);
+}
+
+void reconnectMQTT()
+{
+    // Non-blocking approach - only try once per function call
+    if (!mqttClient.connected())
+    {
+        Serial.print("Attempting MQTT connection to server: ");
+        Serial.print(mqttServer);
+        Serial.print(" port: ");
+        Serial.print(mqttPort);
+        Serial.print(" username: ");
+        Serial.print(mqttUsername);
+        
+        if (mqttClient.connect(hostname.c_str(), mqttUsername.c_str(), mqttPassword.c_str())) {
+            Serial.println(" - Connected successfully");
+
+            // Subscribe to necessary topics
+            mqttClient.subscribe("esp32_thermostat/target_temperature/set");
+            mqttClient.subscribe("esp32_thermostat/mode/set");
+            mqttClient.subscribe("esp32_thermostat/fan_mode/set");
+
+            // Publish Home Assistant discovery messages
+            publishHomeAssistantDiscovery();
+        }
+        else
+        {
+            int mqttState = mqttClient.state();
+            Serial.print(" - Connection failed, rc=");
+            Serial.print(mqttState);
+            Serial.print(" (");
+            
+            // Provide human-readable error messages
+            switch(mqttState) {
+                case -4: Serial.print("MQTT_CONNECTION_TIMEOUT"); break;
+                case -3: Serial.print("MQTT_CONNECTION_LOST"); break;
+                case -2: Serial.print("MQTT_CONNECT_FAILED"); break;
+                case -1: Serial.print("MQTT_DISCONNECTED"); break;
+                case 1: Serial.print("MQTT_CONNECT_BAD_PROTOCOL"); break;
+                case 2: Serial.print("MQTT_CONNECT_BAD_CLIENT_ID"); break;
+                case 3: Serial.print("MQTT_CONNECT_UNAVAILABLE"); break;
+                case 4: Serial.print("MQTT_CONNECT_BAD_CREDENTIALS"); break;
+                case 5: Serial.print("MQTT_CONNECT_UNAUTHORIZED"); break;
+                default: Serial.print("UNKNOWN ERROR"); break;
+            }
+            
+            Serial.println(")");
+            Serial.print("Server: ");
+            Serial.print(mqttServer);
+            Serial.print(", Port: ");
+            Serial.println(mqttPort);
+        }
+    }
+}
+
+void publishHomeAssistantDiscovery()
+{
+    if (mqttEnabled)
+    {
+        char buffer[1024];
+        StaticJsonDocument<1024> doc;
+
+        // Publish discovery message for the thermostat device
+        String configTopic = "homeassistant/climate/esp32_thermostat/config";
+        doc["name"] = ""; // Use hostname instead of hardcoded name
+        doc["unique_id"] = "esp32_thermostat";
+        doc["current_temperature_topic"] = "esp32_thermostat/current_temperature";
+        doc["current_humidity_topic"] = "esp32_thermostat/current_humidity";
+        doc["temperature_command_topic"] = "esp32_thermostat/target_temperature/set";
+        doc["temperature_state_topic"] = "esp32_thermostat/target_temperature";
+        doc["mode_command_topic"] = "esp32_thermostat/mode/set";
+        doc["mode_state_topic"] = "esp32_thermostat/mode";
+        doc["fan_mode_command_topic"] = "esp32_thermostat/fan_mode/set";
+        doc["fan_mode_state_topic"] = "esp32_thermostat/fan_mode";
+        doc["availability_topic"] = "esp32_thermostat/availability";
+        doc["min_temp"] = 50; // Minimum temperature in Fahrenheit
+        doc["max_temp"] = 90; // Maximum temperature in Fahrenheit
+        doc["temp_step"] = 0.5; // Temperature step
+
+        JsonArray modes = doc.createNestedArray("modes");
+        modes.add("off");
+        modes.add("heat");
+        modes.add("cool");
+        modes.add("auto");
+
+        JsonArray fanModes = doc.createNestedArray("fan_modes");
+        fanModes.add("auto");
+        fanModes.add("on");
+        fanModes.add("cycle");
+
+        JsonObject device = doc.createNestedObject("device");
+        device["identifiers"] = "esp32_thermostat";
+        device["name"] = hostname;
+        device["manufacturer"] = "TDC";
+        device["model"] = "Simple Thermostat";
+        device["sw_version"] = sw_version;
+
+        serializeJson(doc, buffer);
+        mqttClient.publish(configTopic.c_str(), buffer, true);
+
+        // Publish availability message
+        mqttClient.publish("esp32_thermostat/availability", "online", true);
+
+        // Debug log for payload
+        Serial.println("Published Home Assistant discovery payload:");
+        Serial.println(buffer);
+    }
+    else
+    {
+        // Remove all entities by publishing empty payloads
+        mqttClient.publish("homeassistant/climate/esp32_thermostat/config", "");
+        mqttClient.publish("esp32_thermostat/availability", "offline", true);
+    }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+    String message;
+    for (unsigned int i = 0; i < length; i++)
+    {
+        message += (char)payload[i];
+    }
+
+    Serial.print("Message arrived [");
+    Serial.print(topic);
+    Serial.print("] ");
+    Serial.println(message);
+
+    // Set flag to indicate we're handling an MQTT message to prevent publish loops
+    handlingMQTTMessage = true;
+    bool settingsNeedSaving = false;
+
+    if (String(topic) == "esp32_thermostat/mode/set")
+    {
+        if (message != thermostatMode)
+        {
+            thermostatMode = message;
+            Serial.print("Updated thermostat mode to: ");
+            Serial.println(thermostatMode);
+            settingsNeedSaving = true;
+            controlRelays(currentTemp); // Apply changes to relays
+        }
+    }
+    else if (String(topic) == "esp32_thermostat/fan_mode/set")
+    {
+        if (message != fanMode)
+        {
+            fanMode = message;
+            Serial.print("Updated fan mode to: ");
+            Serial.println(fanMode);
+            settingsNeedSaving = true;
+            controlRelays(currentTemp); // Apply changes to relays
+        }
+    }
+    else if (String(topic) == "esp32_thermostat/target_temperature/set")
+    {
+        float newTargetTemp = message.toFloat();
+        if (thermostatMode == "heat" && newTargetTemp != setTempHeat)
+        {
+            setTempHeat = newTargetTemp;
+            Serial.print("Updated heating target temperature to: ");
+            Serial.println(setTempHeat);
+            settingsNeedSaving = true;
+        }
+        else if (thermostatMode == "cool" && newTargetTemp != setTempCool)
+        {
+            setTempCool = newTargetTemp;
+            Serial.print("Updated cooling target temperature to: ");
+            Serial.println(setTempCool);
+            settingsNeedSaving = true;
+        }
+        else if (thermostatMode == "auto" && newTargetTemp != setTempAuto)
+        {
+            setTempAuto = newTargetTemp;
+            Serial.print("Updated auto target temperature to: ");
+            Serial.println(setTempAuto);
+            settingsNeedSaving = true;
+        }
+        controlRelays(currentTemp); // Apply changes to relays
+    }
+
+    // Save settings to flash if they were changed
+    if (settingsNeedSaving) {
+        Serial.println("Saving settings changed via MQTT");
+        saveSettings();
+    }
+
+    // Clear the handling flag
+    handlingMQTTMessage = false;
+}
+
+void sendMQTTData()
+{
+    static float lastTemp = 0.0;
+    static float lastHumidity = 0.0;
+    static float lastSetTempHeat = 0.0;
+    static float lastSetTempCool = 0.0;
+    static float lastSetTempAuto = 0.0; // Track last auto temp
+    static String lastThermostatMode = "";
+    static String lastFanMode = "";
+
+    if (mqttClient.connected())
+    {
+        // Publish current temperature
+        if (!isnan(currentTemp) && currentTemp != lastTemp)
+        {
+            mqttClient.publish("esp32_thermostat/current_temperature", String(currentTemp).c_str(), true);
+            lastTemp = currentTemp;
+        }
+
+        // Publish current humidity
+        if (!isnan(currentHumidity) && currentHumidity != lastHumidity)
+        {
+            mqttClient.publish("esp32_thermostat/current_humidity", String(currentHumidity).c_str(), true);
+            lastHumidity = currentHumidity;
+        }
+
+        // Publish target temperature (set temperature for heating, cooling, or auto)
+        if (thermostatMode == "heat" && setTempHeat != lastSetTempHeat)
+        {
+            mqttClient.publish("esp32_thermostat/target_temperature", String(setTempHeat).c_str(), true);
+            lastSetTempHeat = setTempHeat;
+        }
+        else if (thermostatMode == "cool" && setTempCool != lastSetTempCool)
+        {
+            mqttClient.publish("esp32_thermostat/target_temperature", String(setTempCool).c_str(), true);
+            lastSetTempCool = setTempCool;
+        }
+        else if (thermostatMode == "auto" && setTempAuto != lastSetTempAuto)
+        {
+            mqttClient.publish("esp32_thermostat/target_temperature", String(setTempAuto).c_str(), true);
+            lastSetTempAuto = setTempAuto;
+        }
+
+        // Publish thermostat mode
+        if (thermostatMode != lastThermostatMode)
+        {
+            mqttClient.publish("esp32_thermostat/mode", thermostatMode.c_str(), true);
+            lastThermostatMode = thermostatMode;
+        }
+
+        // Publish fan mode
+        if (fanMode != lastFanMode)
+        {
+            mqttClient.publish("esp32_thermostat/fan_mode", fanMode.c_str(), true);
+            lastFanMode = fanMode;
+        }
+
+        // Publish availability
+        mqttClient.publish("esp32_thermostat/availability", "online", true);
+    }
+}
+
+void controlRelays(float currentTemp)
+{
+    // Add debugging information
+    Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f, swing=%.1f\n", 
+                 thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto, tempSwing);
+
+    // Check if temperature reading is valid
+    if (isnan(currentTemp)) {
+        Serial.println("WARNING: Invalid temperature reading, skipping relay control");
+        return;
+    }
+
+    if (thermostatMode == "off")
+    {
+        // Turn off heating and cooling relays, but don't turn off fan
+        // This allows the fan to operate in "on" or "cycle" mode even when thermostat is off
+        digitalWrite(heatRelay1Pin, LOW);
+        digitalWrite(heatRelay2Pin, LOW);
+        digitalWrite(coolRelay1Pin, LOW);
+        digitalWrite(coolRelay2Pin, LOW);
+        heatingOn = false;
+        coolingOn = false;
+        stage1Active = false;
+        stage2Active = false;
+        
+        // Handle fan separately based on fanMode
+        if (fanMode == "on") {
+            digitalWrite(fanRelayPin, HIGH);
+            fanOn = true;
+            Serial.println("Fan on while thermostat is off");
+        }
+        else if (fanMode == "auto") {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+        }
+        // Note: "cycle" fan mode is handled by controlFanSchedule()
+        
+        return;
+    }
+
+    // Rest of the thermostat logic for heat, cool, and auto modes
+    if (thermostatMode == "heat")
+    {
+        // Only activate heating if below setpoint - swing
+        if (currentTemp < (setTempHeat - tempSwing))
+        {
+            Serial.printf("Activating heating: current %.1f < setpoint-swing %.1f\n", 
+                         currentTemp, (setTempHeat - tempSwing));
+            activateHeating();
+        }
+        // Only turn off if above setpoint (hysteresis)
+        else if (currentTemp >= setTempHeat)
+        {
+            Serial.printf("Deactivating heating: current %.1f >= setpoint %.1f\n", 
+                         currentTemp, setTempHeat);
+            turnOffAllRelays();
+        }
+        // Otherwise maintain current state (hysteresis band)
+    }
+    else if (thermostatMode == "cool")
+    {
+        // Only activate cooling if above setpoint + swing
+        if (currentTemp > (setTempCool + tempSwing))
+        {
+            Serial.printf("Activating cooling: current %.1f > setpoint+swing %.1f\n", 
+                         currentTemp, (setTempCool + tempSwing));
+            activateCooling();
+        }
+        // Only turn off if below setpoint (hysteresis)
+        else if (currentTemp <= setTempCool)
+        {
+            Serial.printf("Deactivating cooling: current %.1f <= setpoint %.1f\n", 
+                         currentTemp, setTempCool);
+            turnOffAllRelays();
+        }
+        // Otherwise maintain current state (hysteresis band)
+    }
+    else if (thermostatMode == "auto")
+    {
+        if (currentTemp < (setTempAuto - autoTempSwing))
+        {
+            Serial.printf("Auto mode activating heating: current %.1f < auto_setpoint-swing %.1f\n", 
+                         currentTemp, (setTempAuto - autoTempSwing));
+            activateHeating();
+        }
+        else if (currentTemp > (setTempAuto + autoTempSwing))
+        {
+            Serial.printf("Auto mode activating cooling: current %.1f > auto_setpoint+swing %.1f\n", 
+                         currentTemp, (setTempAuto + autoTempSwing));
+            activateCooling();
+        }
+        else
+        {
+            Serial.printf("Auto mode temperature in deadband, turning off: %.1f is between %.1f and %.1f\n", 
+                         currentTemp, (setTempAuto - autoTempSwing), (setTempAuto + autoTempSwing));
+            turnOffAllRelays();
+        }
+    }
+
+    // Make sure fan control is applied
+    handleFanControl();
+    
+    // Log final relay states
+    Serial.printf("Relay states: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
+}
+
+void turnOffAllRelays()
+{
+    digitalWrite(heatRelay1Pin, LOW);
+    digitalWrite(heatRelay2Pin, LOW);
+    digitalWrite(coolRelay1Pin, LOW);
+    digitalWrite(coolRelay2Pin, LOW);
+    digitalWrite(fanRelayPin, LOW);
+    heatingOn = coolingOn = fanOn = false;
+    stage1Active = false; // Reset stage 1 active flag
+    stage2Active = false; // Reset stage 2 active flag
+}
+
+void activateHeating() {
+    if (hydronicHeatingEnabled) {
+        if (hydronicTemp <= hydronicTempLow) {
+            // Pause heating if hydronic temperature is too low
+            digitalWrite(heatRelay1Pin, LOW);
+            digitalWrite(heatRelay2Pin, LOW);
+            heatingOn = false;
+            stage1Active = false;
+            stage2Active = false;
+            Serial.println("Hydronics too cold, pausing heating");
+            return;
+        } else if (hydronicTemp >= hydronicTempHigh) {
+            // Resume heating if hydronic temperature is high enough
+            // Continue with normal heating logic below
+        }
+    }
+
+    // Default heating behavior with hybrid staging
+    Serial.println("Activating heating relays"); // Debug message
+    heatingOn = true;
+    coolingOn = false;
+    
+    // Check if stage 1 is not active yet
+    if (!stage1Active) {
+        digitalWrite(heatRelay1Pin, HIGH); // Activate stage 1
+        stage1Active = true;
+        stage1StartTime = millis(); // Record the start time
+        stage2Active = false; // Ensure stage 2 is off initially
+        Serial.println("Stage 1 heating activated");
+    } 
+    // Check if it's time to activate stage 2 based on hybrid approach
+    else if (!stage2Active && 
+             ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
+             (currentTemp < setTempHeat - tempSwing - stage2TempDelta) && // Temperature delta condition
+             stage2HeatingEnabled) { // Check if stage 2 heating is enabled
+        digitalWrite(heatRelay2Pin, HIGH); // Activate stage 2
+        stage2Active = true;
+        Serial.println("Stage 2 heating activated");
+    }
+    
+    // Control fan based on fanRelayNeeded setting
+    if (fanRelayNeeded) {
+        digitalWrite(fanRelayPin, HIGH);
+        fanOn = true;
+        Serial.println("Fan activated with heat");
+    }
+}
+
+void activateCooling()
+{
+    // Default cooling behavior with hybrid staging
+    Serial.println("Activating cooling relays"); // Debug message
+    coolingOn = true;
+    heatingOn = false;
+    
+    // Check if stage 1 is not active yet
+    if (!stage1Active) {
+        digitalWrite(coolRelay1Pin, HIGH); // Activate stage 1
+        stage1Active = true;
+        stage1StartTime = millis(); // Record the start time
+        stage2Active = false; // Ensure stage 2 is off initially
+        Serial.println("Stage 1 cooling activated");
+    } 
+    // Check if it's time to activate stage 2 based on hybrid approach
+    else if (!stage2Active && 
+            ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
+            (currentTemp > setTempCool + tempSwing + stage2TempDelta) && // Temperature delta condition
+            stage2CoolingEnabled) { // Check if stage 2 cooling is enabled
+        digitalWrite(coolRelay2Pin, HIGH); // Activate stage 2
+        stage2Active = true;
+        Serial.println("Stage 2 cooling activated");
+    }
+    
+    // Control fan based on fanRelayNeeded setting
+    if (fanRelayNeeded) {
+        digitalWrite(fanRelayPin, HIGH);
+        fanOn = true;
+        Serial.println("Fan activated with cooling");
+    }
+}
+
+void handleFanControl()
+{
+    if (fanMode == "on")
+    {
+        digitalWrite(fanRelayPin, HIGH);
+        fanOn = true;
+    }
+    else if (fanMode == "auto" && !heatingOn && !coolingOn)
+    {
+        digitalWrite(fanRelayPin, LOW);
+        fanOn = false;
+    }
+}
+
+void controlFanSchedule()
+{
+    if (firstHourAfterBoot)
+    {
+        unsigned long currentTime = millis();
+        if (currentTime >= SECONDS_PER_HOUR * 1000) // Check if an hour has passed
+        {
+            firstHourAfterBoot = false; // Reset the flag after the first hour
+        }
+        return; // Skip fan schedule during the first hour
+    }
+
+    if (fanMode == "cycle")
+    {
+        unsigned long currentTime = millis();
+        unsigned long elapsedTime = (currentTime - lastFanRunTime) / 1000; // Convert to seconds
+
+        // Calculate the duration in seconds the fan should run per hour
+        unsigned long fanRunSecondsPerHour = fanMinutesPerHour * 60;
+
+        // If an hour has passed, reset the fan run duration
+        if (elapsedTime >= SECONDS_PER_HOUR)
+        {
+            lastFanRunTime = currentTime;
+            fanRunDuration = 0;
+        }
+
+        // Run the fan based on the schedule
+        if (fanRunDuration < fanRunSecondsPerHour)
+        {
+            digitalWrite(fanRelayPin, HIGH);
+            fanOn = true;
+        }
+        else
+        {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+        }
+
+        // Update the fan run duration
+        if (fanOn)
+        {
+            fanRunDuration += elapsedTime;
+        }
+    }
+    // Retain auto mode for backward compatibility
+    else if (fanMode == "auto")
+    {
+        // No scheduled fan running in auto mode
+        // Optionally, you could keep the old schedule logic here if desired
+    }
+}
+
+void handleWebRequests()
+{
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+    {
+        String html = "<html><head><meta http-equiv='refresh' content='10'></head><body>"; // Changed refresh time to 10 seconds
+        html += "<h1>Thermostat Status</h1>";
+        html += "<p>Firmware Version: " + sw_version + "</p>";
+        html += "<p>Current Temperature: " + String(currentTemp) + (useFahrenheit ? " F" : " C") + "</p>";
+        html += "<p>Current Humidity: " + String(currentHumidity) + " %</p>";
+        if (hydronicHeatingEnabled) {
+            html += "<p>Hydronic Temperature: " + String(hydronicTemp) + " F</p>";
+        }
+        html += "<p>Thermostat Mode: " + thermostatMode + "</p>";
+        html += "<p>Fan Mode: " + fanMode + "</p>";
+        html += "<p>Heating Relay 1: " + String(digitalRead(heatRelay1Pin) ? "ON" : "OFF") + "</p>";
+        html += "<p>Heating Relay 2: " + String(digitalRead(heatRelay2Pin) ? "ON" : "OFF") + "</p>";
+        html += "<p>Cooling Relay 1: " + String(digitalRead(coolRelay1Pin) ? "ON" : "OFF") + "</p>";
+        html += "<p>Cooling Relay 2: " + String(digitalRead(coolRelay2Pin) ? "ON" : "OFF") + "</p>";
+        html += "<p>Fan Relay: " + String(digitalRead(fanRelayPin) ? "ON" : "OFF") + "</p>";
+        html += "<form action='/settings' method='GET'>";
+        html += "<input type='submit' value='Settings'>";
+        html += "</form>";
+        // Add a reboot button to the main page
+        html += "<form action='/reboot' method='POST'>";
+        html += "<input type='submit' value='Reboot'>";
+        html += "</form>";
+        html += "</body></html>";
+
+        request->send(200, "text/html", html);
+    });
+
+    server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request)
+    {
+        String html = "<html><body>";
+        html += "<h1>Thermostat Settings</h1>";
+        html += "<form action='/set' method='POST'>";
+        html += "Thermostat Mode: <select name='thermostatMode'>";
+        html += "<option value='off'" + String(thermostatMode == "off" ? " selected" : "") + ">Off</option>";
+        html += "<option value='heat'" + String(thermostatMode == "heat" ? " selected" : "") + ">Heat</option>";
+        html += "<option value='cool'" + String(thermostatMode == "cool" ? " selected" : "") + ">Cool</option>";
+        html += "<option value='auto'" + String(thermostatMode == "auto" ? " selected" : "") + ">Auto</option>";
+        html += "</select><br>";
+        html += "Fan Mode: <select name='fanMode'>";
+        html += "<option value='auto'" + String(fanMode == "auto" ? " selected" : "") + ">Auto</option>";
+        html += "<option value='on'" + String(fanMode == "on" ? " selected" : "") + ">On</option>";
+        html += "<option value='cycle'" + String(fanMode == "cycle" ? " selected" : "") + ">Cycle</option>";
+        html += "</select><br>";
+        html += "Set Temp Heat: <input type='text' name='setTempHeat' value='" + String(setTempHeat) + "'><br>";
+        html += "Set Temp Cool: <input type='text' name='setTempCool' value='" + String(setTempCool) + "'><br>";
+        html += "Set Temp Auto: <input type='text' name='setTempAuto' value='" + String(setTempAuto) + "'><br>";
+        html += "Temp Swing: <input type='text' name='tempSwing' value='" + String(tempSwing) + "'><br>";
+        html += "Auto Temp Swing: <input type='text' name='autoTempSwing' value='" + String(autoTempSwing) + "'><br>";
+//         html += "Auto Changeover: <input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + "><br>";
+        html += "Fan Relay Needed: <input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + "><br>";
+        html += "Use Fahrenheit: <input type='checkbox' name='useFahrenheit' " + String(useFahrenheit ? "checked" : "") + "><br>";
+        html += "MQTT Enabled: <input type='checkbox' name='mqttEnabled' " + String(mqttEnabled ? "checked" : "") + "><br>";
+        html += "Hybrid Staging Settings:<br>";
+        html += "Stage 1 Min Runtime (seconds): <input type='text' name='stage1MinRuntime' value='" + String(stage1MinRuntime) + "'><br>";
+        html += "Stage 2 Temp Delta: <input type='text' name='stage2TempDelta' value='" + String(stage2TempDelta) + "'><br>";
+        html += "Enable 2nd Stage Heating: <input type='checkbox' name='stage2HeatingEnabled' " + String(stage2HeatingEnabled ? "checked" : "") + "><br>";
+        html += "Enable 2nd Stage Cooling: <input type='checkbox' name='stage2CoolingEnabled' " + String(stage2CoolingEnabled ? "checked" : "") + "><br>";
+        html += "Hydronic Heating Enabled: <input type='checkbox' name='hydronicHeatingEnabled' " + String(hydronicHeatingEnabled ? "checked" : "") + "><br>";
+        html += "Hydronic Temp Low: <input type='text' name='hydronicTempLow' value='" + String(hydronicTempLow) + "'><br>";
+        html += "Hydronic Temp High: <input type='text' name='hydronicTempHigh' value='" + String(hydronicTempHigh) + "'><br>";
+        html += "Fan Minutes Per Hour: <input type='text' name='fanMinutesPerHour' value='" + String(fanMinutesPerHour) + "'><br>";
+        html += "MQTT Server: <input type='text' name='mqttServer' value='" + mqttServer + "'><br>";
+        html += "MQTT Port: <input type='text' name='mqttPort' value='" + String(mqttPort) + "'><br>";
+        html += "MQTT Username: <input type='text' name='mqttUsername' value='" + mqttUsername + "'><br>";
+        html += "MQTT Password: <input type='text' name='mqttPassword' value='" + mqttPassword + "'><br>";
+        html += "WiFi SSID: <input type='text' name='wifiSSID' value='" + wifiSSID + "'><br>";
+        html += "WiFi Password: <input type='text' name='wifiPassword' value='" + wifiPassword + "'><br>";
+        html += "Hostname: <input type='text' name='hostname' value='" + hostname + "'><br>";
+        html += "Clock Format: <select name='clockFormat'>";
+        html += "<option value='24' " + String(use24HourClock ? "selected" : "") + ">24-hour</option>";
+        html += "<option value='12' " + String(!use24HourClock ? "selected" : "") + ">12-hour</option>";
+        html += "</select><br>";
+        html += "Time Zone: <select name='timeZone'>";
+        html += "<option value='UTC' " + String(timeZone == "UTC" ? "selected" : "") + ">UTC</option>";
+        html += "<option value='PST8PDT,M3.2.0,M11.1.0' " + String(timeZone == "PST8PDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Pacific Time (PST)</option>";
+        html += "<option value='MST7MDT,M3.2.0,M11.1.0' " + String(timeZone == "MST7MDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Mountain Time (MST)</option>";
+        html += "<option value='CST6CDT,M3.2.0,M11.1.0' " + String(timeZone == "CST6CDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Central Time (CST)</option>";
+        html += "<option value='EST5EDT,M3.2.0,M11.1.0' " + String(timeZone == "EST5EDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Eastern Time (EST)</option>";
+        html += "<option value='AST4ADT,M3.2.0,M11.1.0' " + String(timeZone == "AST4ADT,M3.2.0,M11.1.0" ? "selected" : "") + ">Atlantic Time (AST)</option>";
+        html += "<option value='NST3:30NDT,M3.2.0,M11.1.0' " + String(timeZone == "NST3:30NDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Newfoundland Time (NST)</option>";
+        html += "<option value='HST10HDT,M3.2.0,M11.1.0' " + String(timeZone == "HST10HDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Hawaii-Aleutian Time (HST)</option>";
+        html += "<option value='AKST9AKDT,M3.2.0,M11.1.0' " + String(timeZone == "AKST9AKDT,M3.2.0,M11.1.0" ? "selected" : "") + ">Alaska Time (AKST)</option>";
+        html += "<option value='AEST-10AEDT,M10.1.0,M4.1.0/3' " + String(timeZone == "AEST-10AEDT,M10.1.0,M4.1.0/3" ? "selected" : "") + ">Australian Eastern Time (AEST)</option>";
+        html += "<option value='ACST-9:30ACDT,M10.1.0,M4.1.0/3' " + String(timeZone == "ACST-9:30ACDT,M10.1.0,M4.1.0/3" ? "selected" : "") + ">Australian Central Time (ACST)</option>";
+        html += "<option value='AWST-8' " + String(timeZone == "AWST-8" ? "selected" : "") + ">Australian Western Time (AWST)</option>";
+        html += "<option value='NZST-12NZDT,M9.5.0,M4.1.0/3' " + String(timeZone == "NZST-12NZDT,M9.5.0,M4.1.0/3" ? "selected" : "") + ">New Zealand Time (NZST)</option>";
+        html += "<option value='WET0WEST,M3.5.0/1,M10.5.0' " + String(timeZone == "WET0WEST,M3.5.0/1,M10.5.0" ? "selected" : "") + ">Western European Time (WET)</option>";
+        html += "<option value='CET-1CEST,M3.5.0,M10.5.0/3' " + String(timeZone == "CET-1CEST,M3.5.0,M10.5.0/3" ? "selected" : "") + ">Central European Time (CET)</option>";
+        html += "<option value='EET-2EEST,M3.5.0/3,M10.5.0/4' " + String(timeZone == "EET-2EEST,M3.5.0/3,M10.5.0/4" ? "selected" : "") + ">Eastern European Time (EET)</option>";
+        html += "<option value='ART-3' " + String(timeZone == "ART-3" ? "selected" : "") + ">Argentina Time (ART)</option>";
+        html += "<option value='BRT-3' " + String(timeZone == "BRT-3" ? "selected" : "") + ">Brasilia Time (BRT)</option>";
+        html += "<option value='CLT-4' " + String(timeZone == "CLT-4" ? "selected" : "") + ">Chile Time (CLT)</option>";
+        html += "<option value='COT-5' " + String(timeZone == "COT-5" ? "selected" : "") + ">Colombia Time (COT)</option>";
+        html += "<option value='ECT-5' " + String(timeZone == "ECT-5" ? "selected" : "") + ">Ecuador Time (ECT)</option>";
+        html += "<option value='GYT-4' " + String(timeZone == "GYT-4" ? "selected" : "") + ">Guyana Time (GYT)</option>";
+        html += "<option value='PYT-4' " + String(timeZone == "PYT-4" ? "selected" : "") + ">Paraguay Time (PYT)</option>";
+        html += "<option value='PET-5' " + String(timeZone == "PET-5" ? "selected" : "") + ">Peru Time (PET)</option>";
+        html += "<option value='VET-4:30' " + String(timeZone == "VET-4:30" ? "selected" : "") + ">Venezuelan Time (VET)</option>";
+        html += "<option value='GMT0BST,M3.5.0/1,M10.5.0' " + String(timeZone == "GMT0BST,M3.5.0/1,M10.5.0" ? "selected" : "") + ">Greenwich Mean Time (GMT)</option>";
+        html += "<option value='IST-5:30' " + String(timeZone == "IST-5:30" ? "selected" : "") + ">India Standard Time (IST)</option>";
+        html += "<option value='JST-9' " + String(timeZone == "JST-9" ? "selected" : "") + ">Japan Standard Time (JST)</option>";
+        html += "<option value='KST-9' " + String(timeZone == "KST-9" ? "selected" : "") + ">Korea Standard Time (KST)</option>";
+        html += "<option value='CST-8' " + String(timeZone == "CST-8" ? "selected" : "") + ">China Standard Time (CST)</option>";
+        html += "<option value='SGT-8' " + String(timeZone == "SGT-8" ? "selected" : "") + ">Singapore Time (SGT)</option>";
+        html += "<option value='HKT-8' " + String(timeZone == "HKT-8" ? "selected" : "") + ">Hong Kong Time (HKT)</option>";
+        html += "<option value='MYT-8' " + String(timeZone == "MYT-8" ? "selected" : "") + ">Malaysia Time (MYT)</option>";
+        html += "<option value='PHT-8' " + String(timeZone == "PHT-8" ? "selected" : "") + ">Philippine Time (PHT)</option>";
+        html += "<option value='WITA-8' " + String(timeZone == "WITA-8" ? "selected" : "") + ">Central Indonesia Time (WITA)</option>";
+        html += "<option value='WIB-7' " + String(timeZone == "WIB-7" ? "selected" : "") + ">Western Indonesia Time (WIB)</option>";
+        html += "<option value='WIT-9' " + String(timeZone == "WIT-9" ? "selected" : "") + ">Eastern Indonesia Time (WIT)</option>";
+        html += "<option value='NZST-12NZDT,M9.5.0,M4.1.0/3' " + String(timeZone == "NZST-12NZDT,M9.5.0,M4.1.0/3" ? "selected" : "") + ">New Zealand Time (NZST)</option>";
+        html += "</select><br>";
+        html += "<input type='submit' value='Save Settings'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
+        html += "<form action='/update' method='GET'><input type='submit' value='OTA Update'></form>";
+        html += "<form action='/confirm_restore' method='GET'><input type='submit' value='Restore Defaults'></form>";
+        html += "</body></html>";
+
+        request->send(200, "text/html", html);
+    });
+
+    server.on("/confirm_restore", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        String html = "<html><body>";
+        html += "<h1>Confirm Restore Defaults</h1>";
+        html += "<p>Are you sure you want to restore default settings? This will overwrite your current settings.</p>";
+        html += "<form action='/restore_defaults' method='POST'>";
+        html += "<input type='submit' value='Yes, Restore Defaults'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'>";
+        html += "<input type='submit' value='Cancel'>";
+        html += "</form>";
+        html += "</body></html>";
+
+        request->send(200, "text/html", html); });
+
+    server.on("/restore_defaults", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        restoreDefaultSettings();
+        request->send(200, "text/plain", "Default settings restored! Please go back to the previous page."); });
+
+    server.on("/set", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("setTempHeat", true)) {
+            setTempHeat = request->getParam("setTempHeat", true)->value().toFloat();
+            if (setTempHeat < 50) setTempHeat = 50;
+            if (setTempHeat > 95) setTempHeat = 95;
+        }
+        if (request->hasParam("setTempCool", true)) {
+            setTempCool = request->getParam("setTempCool", true)->value().toFloat();
+            if (setTempCool < 50) setTempCool = 50;
+            if (setTempCool > 95) setTempCool = 95;
+        }
+        if (request->hasParam("setTempAuto", true)) {
+            setTempAuto = request->getParam("setTempAuto", true)->value().toFloat();
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (setTempAuto > 95) setTempAuto = 95;
+        }
+        if (request->hasParam("tempSwing", true)) {
+            tempSwing = request->getParam("tempSwing", true)->value().toFloat();
+        }
+        if (request->hasParam("autoTempSwing", true)) {
+            autoTempSwing = request->getParam("autoTempSwing", true)->value().toFloat();
+        }
+        if (request->hasParam("autoChangeover", true)) {
+            autoChangeover = request->getParam("autoChangeover", true)->value() == "on";
+        }
+        if (request->hasParam("fanRelayNeeded", true)) {
+            fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on";
+        } else {
+            fanRelayNeeded = false; // Ensure fanRelayNeeded is set to false if not present in the form
+        }
+        if (request->hasParam("useFahrenheit", true)) {
+            useFahrenheit = request->getParam("useFahrenheit", true)->value() == "on";
+        }
+        if (request->hasParam("mqttEnabled", true)) {
+            mqttEnabled = request->getParam("mqttEnabled", true)->value() == "on";
+        } else {
+            mqttEnabled = false; // Ensure mqttEnabled is set to false if not present in the form
+        }
+        if (request->hasParam("hydronicHeatingEnabled", true)) {
+            hydronicHeatingEnabled = request->getParam("hydronicHeatingEnabled", true)->value() == "on"; // Handle hydronic heating option
+        } else {
+            hydronicHeatingEnabled = false; // Ensure hydronicHeatingEnabled is set to false if not present in the form
+        }
+        if (request->hasParam("hydronicTempLow", true)) {
+            hydronicTempLow = request->getParam("hydronicTempLow", true)->value().toFloat(); // Handle hydronic temp low
+        }
+        if (request->hasParam("hydronicTempHigh", true)) {
+            hydronicTempHigh = request->getParam("hydronicTempHigh", true)->value().toFloat(); // Handle hydronic temp high
+        }
+        if (request->hasParam("fanMinutesPerHour", true)) {
+            fanMinutesPerHour = request->getParam("fanMinutesPerHour", true)->value().toInt();
+        }
+        if (request->hasParam("mqttServer", true)) {
+            mqttServer = request->getParam("mqttServer", true)->value(); // Ensure mqttServer is updated correctly
+        }
+        if (request->hasParam("mqttPort", true)) {
+            mqttPort = request->getParam("mqttPort", true)->value().toInt(); // Ensure mqttPort is updated correctly
+        }
+        if (request->hasParam("mqttUsername", true)) {
+            mqttUsername = request->getParam("mqttUsername", true)->value(); // Ensure mqttUsername is updated correctly
+        }
+        if (request->hasParam("mqttPassword", true)) {
+            mqttPassword = request->getParam("mqttPassword", true)->value(); // Ensure mqttPassword is updated correctly
+        }
+        if (request->hasParam("wifiSSID", true)) {
+            wifiSSID = request->getParam("wifiSSID", true)->value(); // Ensure wifiSSID is updated correctly
+        }
+        if (request->hasParam("wifiPassword", true)) {
+            String newWifiPassword = request->getParam("wifiPassword", true)->value();
+            if (!newWifiPassword.isEmpty()) {
+                wifiPassword = newWifiPassword; // Update wifiPassword only if a new one is provided
+            }
+        }
+        if (request->hasParam("hostname", true)) {
+            hostname = request->getParam("hostname", true)->value(); // Ensure hostname is updated correctly
+        }
+        if (request->hasParam("clockFormat", true)) {
+            use24HourClock = request->getParam("clockFormat", true)->value() == "24";
+        }
+        if (request->hasParam("timeZone", true)) {
+            timeZone = request->getParam("timeZone", true)->value();
+            setenv("TZ", timeZone.c_str(), 1);
+            tzset();
+        }
+        if (request->hasParam("thermostatMode", true)) {
+            thermostatMode = request->getParam("thermostatMode", true)->value();
+        }
+        if (request->hasParam("fanMode", true)) {
+            fanMode = request->getParam("fanMode", true)->value();
+        }
+        if (request->hasParam("stage1MinRuntime", true)) {
+            stage1MinRuntime = request->getParam("stage1MinRuntime", true)->value().toInt();
+        }
+        if (request->hasParam("stage2TempDelta", true)) {
+            stage2TempDelta = request->getParam("stage2TempDelta", true)->value().toFloat();
+        }
+        if (request->hasParam("stage2HeatingEnabled", true)) {
+            stage2HeatingEnabled = request->getParam("stage2HeatingEnabled", true)->value() == "on";
+        } else {
+            stage2HeatingEnabled = false; // Ensure stage2HeatingEnabled is set to false if not present in the form
+        }
+        if (request->hasParam("stage2CoolingEnabled", true)) {
+            stage2CoolingEnabled = request->getParam("stage2CoolingEnabled", true)->value() == "on";
+        } else {
+            stage2CoolingEnabled = false; // Ensure stage2CoolingEnabled is set to false if not present in the form
+        }
+
+        saveSettings();
+        sendMQTTData();
+        publishHomeAssistantDiscovery(); // Publish discovery messages after saving settings
+        String response = "<html><body><h1>Settings saved!</h1>";
+        response += "<p>Returning to the settings page in 5 seconds...</p>";
+        response += "<script>setTimeout(function(){ window.location.href = '/settings'; }, 5000);</script>";
+        response += "</body></html>";
+        request->send(200, "text/html", response); });
+
+    server.on("/set_heating", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("heating", true)) {
+            String heatingState = request->getParam("heating", true)->value();
+            heatingOn = heatingState == "on";
+            digitalWrite(heatRelay1Pin, heatingOn ? HIGH : LOW);
+            digitalWrite(heatRelay2Pin, heatingOn ? HIGH : LOW);
+            request->send(200, "application/json", "{\"heating\": \"" + heatingState + "\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
+        } });
+
+    server.on("/set_cooling", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("cooling", true)) {
+            String coolingState = request->getParam("cooling", true)->value();
+            coolingOn = coolingState == "on";
+            digitalWrite(coolRelay1Pin, coolingOn ? HIGH : LOW);
+            digitalWrite(coolRelay2Pin, coolingOn ? HIGH : LOW);
+            request->send(200, "application/json", "{\"cooling\": \"" + coolingState + "\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
+        } });
+
+    server.on("/set_fan", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("fan", true)) {
+            String fanState = request->getParam("fan", true)->value();
+            fanOn = fanState == "on";
+            digitalWrite(fanRelayPin, fanOn ? HIGH : LOW);
+            request->send(200, "application/json", "{\"fan\": \"" + fanState + "\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
+        } });
+
+    server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        sensors_event_t humidity, temp;
+        aht.getEvent(&humidity, &temp);
+        float currentTemp = useFahrenheit ? (temp.temperature * 9.0 / 5.0 + 32.0) : temp.temperature;
+        String response = "{\"temperature\": \"" + String(currentTemp) + "\"}";
+        request->send(200, "application/json", response); });
+
+    server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        sensors_event_t humidity, temp;
+        aht.getEvent(&humidity, &temp);
+        float currentHumidity = humidity.relative_humidity;
+        String response = "{\"humidity\": \"" + String(currentHumidity) + "\"}";
+        request->send(200, "application/json", response); });
+
+    server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        String response = "{\"currentTemp\": \"" + String(currentTemp) + "\",";
+        response += "\"currentHumidity\": \"" + String(currentHumidity) + "\",";
+        response += "\"setTempHeat\": \"" + String(setTempHeat) + "\",";
+        response += "\"setTempCool\": \"" + String(setTempCool) + "\",";
+        response += "\"setTempAuto\": \"" + String(setTempAuto) + "\",";
+        response += "\"tempSwing\": \"" + String(tempSwing) + "\",";
+        response += "\"thermostatMode\": \"" + thermostatMode + "\",";
+        response += "\"fanMode\": \"" + fanMode + "\"}";
+        request->send(200, "application/json", response); });
+
+    server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("setTempHeat", true)) {
+            setTempHeat = request->getParam("setTempHeat", true)->value().toFloat();
+            if (setTempHeat < 50) setTempHeat = 50;
+            if (setTempHeat > 95) setTempHeat = 95;
+        }
+        if (request->hasParam("setTempCool", true)) {
+            setTempCool = request->getParam("setTempCool", true)->value().toFloat();
+            if (setTempCool < 50) setTempCool = 50;
+            if (setTempCool > 95) setTempCool = 95;
+        }
+        if (request->hasParam("setTempAuto", true)) {
+            setTempAuto = request->getParam("setTempAuto", true)->value().toFloat();
+            if (setTempAuto < 50) setTempAuto = 50;
+            if (setTempAuto > 95) setTempAuto = 95;
+        }
+        if (request->hasParam("tempSwing", true)) {
+            tempSwing = request->getParam("tempSwing", true)->value().toFloat();
+        }
+        if (request->hasParam("thermostatMode", true)) {
+            thermostatMode = request->getParam("thermostatMode", true)->value();
+        }
+        if (request->hasParam("fanMode", true)) {
+            fanMode = request->getParam("fanMode", true)->value();
+        }
+
+        saveSettings();
+        sendMQTTData();
+        request->send(200, "application/json", "{\"status\": \"success\"}");
+    });
+
+    server.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        request->send(200, "text/plain", "Rebooting...");
+        delay(1000);
+        ESP.restart();
+    });
+
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
+    {
+        String html = "<html><body>";
+        html += "<h1>OTA Firmware Update</h1>";
+        html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
+        html += "<input type='file' name='firmware'>";
+        html += "<input type='submit' value='Update Firmware'>";
+        html += "</form>";
+        html += "<form action='/' method='GET'><input type='submit' value='Back to Status'></form>";
+        html += "</body></html>";
+        request->send(200, "text/html", html);
+    });
+
+    server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
+    {
+        if (Update.hasError()) {
+            request->send(500, "text/plain", "Firmware Update Failed!");
+        } else {
+            request->send(200, "text/plain", "Firmware Update Successful! Rebooting...");
+            delay(1000);
+            ESP.restart();
+        }
+    },
+    [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
+    {
+        static size_t updateSize = 0;
+        if (!index) {
+            Serial.printf("Update Start: %s\n", filename.c_str());
+            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                Update.printError(Serial);
+            }
+            updateSize = 0;
+        }
+        if (Update.write(data, len) != len) {
+            Update.printError(Serial);
+        }
+        updateSize += len;
+        if (final) {
+            if (Update.end(true)) {
+                Serial.printf("Update Success: %u bytes\n", updateSize);
+            } else {
+                Update.printError(Serial);
+            }
+        }
+    });
+}
+
+void updateDisplay(float currentTemp, float currentHumidity)
+{
+    static char lastTimeStr[32] = "";
+    static bool lastTimeState = false; // false = fallback, true = real time
+    static bool firstTimeUpdate = true;
+    
+    // Get current time and determine display text
+    char currentTimeStr[32];
+    bool currentTimeState = false;
+    
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo))
+    {
+        if (use24HourClock) {
+            strftime(currentTimeStr, sizeof(currentTimeStr), "%H:%M %A", &timeinfo);
+        } else {
+            strftime(currentTimeStr, sizeof(currentTimeStr), "%I:%M %p %A", &timeinfo);
+        }
+        currentTimeState = true;
+    }
+    else
+    {
+        // Fallback when NTP time is not available
+        strcpy(currentTimeStr, "Smart Thermostat-No WiFi");
+        currentTimeState = false;
+    }
+    
+    // Only update time display if it has changed or this is the first update
+    if (firstTimeUpdate || strcmp(currentTimeStr, lastTimeStr) != 0 || currentTimeState != lastTimeState)
+    {
+        // Clear the area for time display (larger area for fallback text)
+        tft.fillRect(0, 0, 320, 30, TFT_BLACK);
+        
+        if (currentTimeState)
+        {
+            // Real time - smaller text
+            tft.setTextSize(2);
+        }
+        else
+        {
+            // Fallback - larger text like original "Loading Settings..."
+            tft.setTextSize(2);
+        }
+        
+        tft.setCursor(0, 0);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print(currentTimeStr);
+        
+        // Update tracking variables
+        strcpy(lastTimeStr, currentTimeStr);
+        lastTimeState = currentTimeState;
+        firstTimeUpdate = false;
+    }
+
+    // Update temperature and humidity (force update on first run)
+    static bool firstRun = true;
+    if (firstRun || currentTemp != previousTemp || currentHumidity != previousHumidity)
+    {
+        // Clear only the areas that need to be updated (FIXED: moved to fit 320px width)
+        tft.fillRect(10, 40, 120, 30, TFT_BLACK); // Clear temperature area
+        tft.fillRect(170, 40, 120, 30, TFT_BLACK); // Clear humidity area
+
+        // Display temperature and humidity (FIXED: removed rotation, proper positioning)
+        tft.setTextSize(3); // Larger text for main readings
+        
+        // Temperature on left side
+        tft.setCursor(10, 40); 
+        char tempStr[6];
+        dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.print(tempStr);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print(useFahrenheit ? "F" : "C");
+
+        // Humidity on right side
+        tft.setCursor(170, 40); 
+        char humidityStr[6];
+        dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place  
+        tft.setTextColor(TFT_BLUE, TFT_BLACK);
+        tft.print(humidityStr);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print("%RH");
+
+        // Update previous values and clear first run flag
+        previousTemp = currentTemp;
+        previousHumidity = currentHumidity;
+        firstRun = false;
+    }
+
+    // Display hydronic temperature if enabled and sensor is present
+    static bool prevHydronicDisplayState = false;
+    
+    // Only update hydronic temp display if it's changed or display state has changed
+    // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
+    if (hydronicHeatingEnabled) {
+        if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
+            // Clear hydronic temperature area (FIXED: moved to fit within 320px width)
+            tft.fillRect(170, 80, 120, 30, TFT_BLACK);
+            
+            // Display hydronic temperature (FIXED: proper positioning)
+            tft.setTextSize(2);
+            tft.setCursor(170, 80); // Position below humidity, within screen bounds
+            char hydronicTempStr[6];
+            dtostrf(hydronicTemp, 4, 1, hydronicTempStr);
+            tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+            tft.print("H:");
+            tft.print(hydronicTempStr);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.print(useFahrenheit ? "F" : "C");
+            
+            previousHydronicTemp = hydronicTemp;
+            prevHydronicDisplayState = true;
+        }
+    } 
+    else if (prevHydronicDisplayState) {
+        // If hydronic heating is disabled or sensor not present, clear the area
+        tft.fillRect(170, 80, 120, 30, TFT_BLACK);
+        prevHydronicDisplayState = false;
+    }
+
+    // Update set temperature only if it has changed and mode is not "off"
+    if (thermostatMode != "off")
+    {
+        float currentSetTemp = (thermostatMode == "heat") ? setTempHeat : (thermostatMode == "cool") ? setTempCool : setTempAuto;
+        if (currentSetTemp != previousSetTemp)
+        {
+            // Clear only the area that needs to be updated
+            tft.fillRect(60, 100, 200, 40, TFT_BLACK); // Clear set temperature area
+
+            // Display set temperature in the center of the display
+            tft.setTextSize(4);
+            tft.setCursor(60, 100);
+            char tempStr[6];
+            dtostrf(currentSetTemp, 4, 1, tempStr); // Convert set temperature to string with 1 decimal place
+            tft.print(tempStr);
+            tft.println(useFahrenheit ? " F" : " C");
+
+            // Update previous value
+            previousSetTemp = currentSetTemp;
+        }
+    }
+    else
+    {
+        // Clear the set temperature area if mode is "off"
+        tft.fillRect(60, 100, 200, 40, TFT_BLACK);
+    }
+
+    // Add status indicators for heating, cooling, and fan
+    // Define an area for status indicators (above the buttons)
+    static bool prevHeatingStatus = false;
+    static bool prevCoolingStatus = false;
+    static bool prevFanStatus = false;
+    
+    // Check if status has changed and update only when necessary
+    if (heatingOn != prevHeatingStatus || coolingOn != prevCoolingStatus || fanOn != prevFanStatus)
+    {
+        // Clear the status indicator area (moved to bottom to avoid mode selection conflict)
+        tft.fillRect(0, 300, 320, 20, TFT_BLACK);
+        
+        // Draw heat indicator if heating is on
+        if (heatingOn)
+        {
+            tft.fillRoundRect(10, 300, 90, 18, 3, TFT_RED);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(1);
+            tft.setCursor(35, 307);
+            tft.print("HEAT");
+        }
+        
+        // Draw cool indicator if cooling is on
+        if (coolingOn)
+        {
+            tft.fillRoundRect(115, 300, 90, 18, 3, TFT_BLUE);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(1);
+            tft.setCursor(140, 307);
+            tft.print("COOL");
+        }
+        
+        // Draw fan indicator if fan is on
+        if (fanOn)
+        {
+            tft.fillRoundRect(220, 300, 90, 18, 3, TFT_ORANGE);
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(1);
+            tft.setCursor(245, 307);
+            tft.print("FAN");
+        }
+        
+        // Update previous status values
+        prevHeatingStatus = heatingOn;
+        prevCoolingStatus = coolingOn;
+        prevFanStatus = fanOn;
+    }
+
+    // Draw buttons at the bottom
+    drawButtons();
+}
+
+void saveSettings()
+{
+    Serial.println("Saving settings:");
+    Serial.print("setTempHeat: "); Serial.println(setTempHeat);
+    Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("setTempAuto: "); Serial.println(setTempAuto);
+    Serial.print("tempSwing: "); Serial.println(tempSwing);
+    Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
+    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
+    Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
+    Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
+    Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
+    Serial.print("fanMinutesPerHour: "); Serial.println(fanMinutesPerHour);
+    Serial.print("mqttServer: "); Serial.println(mqttServer);
+    Serial.print("mqttPort: "); Serial.println(mqttPort);
+    Serial.print("mqttUsername: "); Serial.println(mqttUsername);
+    Serial.print("mqttPassword: "); Serial.println(mqttPassword);
+    Serial.print("wifiSSID: "); Serial.println(wifiSSID);
+    Serial.print("wifiPassword: "); Serial.println(wifiPassword);
+    Serial.print("thermostatMode: "); Serial.println(thermostatMode);
+    Serial.print("fanMode: "); Serial.println(fanMode);
+    Serial.print("timeZone: "); Serial.println(timeZone);
+    Serial.print("use24HourClock: "); Serial.println(use24HourClock);
+    Serial.print("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
+    Serial.print("hydronicTempLow: "); Serial.println(hydronicTempLow);
+    Serial.print("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
+    Serial.print("hostname: "); Serial.println(hostname);
+    Serial.print("stage1MinRuntime: "); Serial.println(stage1MinRuntime);
+    Serial.print("stage2TempDelta: "); Serial.println(stage2TempDelta);
+    Serial.print("stage2HeatingEnabled: "); Serial.println(stage2HeatingEnabled);
+    Serial.print("stage2CoolingEnabled: "); Serial.println(stage2CoolingEnabled);
+
+    preferences.putFloat("setHeat", setTempHeat);
+    preferences.putFloat("setCool", setTempCool);
+    preferences.putFloat("setAuto", setTempAuto);
+    preferences.putFloat("swing", tempSwing);
+    preferences.putFloat("autoSwing", autoTempSwing);
+    preferences.putBool("autoChg", autoChangeover);
+    preferences.putBool("fanRelay", fanRelayNeeded);
+    preferences.putBool("useF", useFahrenheit);
+    preferences.putBool("mqttEn", mqttEnabled);
+    preferences.putInt("fanMinHr", fanMinutesPerHour);
+    preferences.putString("mqttSrv", mqttServer);
+    preferences.putInt("mqttPrt", mqttPort);
+    preferences.putString("mqttUsr", mqttUsername);
+    preferences.putString("mqttPwd", mqttPassword);
+    preferences.putString("wifiID", wifiSSID);
+    preferences.putString("wifiPwd", wifiPassword);
+    preferences.putString("thermoMd", thermostatMode);
+    preferences.putString("fanMd", fanMode);
+    preferences.putString("tz", timeZone);
+    preferences.putBool("use24Clk", use24HourClock);
+    preferences.putBool("hydHeat", hydronicHeatingEnabled);
+    preferences.putFloat("hydLow", hydronicTempLow);
+    preferences.putFloat("hydHigh", hydronicTempHigh);
+    preferences.putString("host", hostname);
+    preferences.putUInt("stg1MnRun", stage1MinRuntime);
+    preferences.putFloat("stg2Delta", stage2TempDelta);
+    preferences.putBool("stg2HeatEn", stage2HeatingEnabled);
+    preferences.putBool("stg2CoolEn", stage2CoolingEnabled);
+    
+    saveWiFiSettings();
+
+    // Debug print to confirm settings are saved
+    Serial.print("Settings saved.");
+}
+
+void loadSettings()
+{
+    setTempHeat = preferences.getFloat("setHeat", 72.0);
+    setTempCool = preferences.getFloat("setCool", 76.0);
+    setTempAuto = preferences.getFloat("setAuto", 74.0);
+    tempSwing = preferences.getFloat("swing", 1.0);
+    autoTempSwing = preferences.getFloat("autoSwing", 1.5);
+    autoChangeover = preferences.getBool("autoChg", true);
+    fanRelayNeeded = preferences.getBool("fanRelay", false);
+    useFahrenheit = preferences.getBool("useF", true);
+    mqttEnabled = preferences.getBool("mqttEn", false);
+    fanMinutesPerHour = preferences.getInt("fanMinHr", 15);
+    mqttServer = preferences.getString("mqttSrv", "0.0.0.0");
+    mqttPort = preferences.getInt("mqttPrt", 1883);
+    mqttUsername = preferences.getString("mqttUsr", "mqtt");
+    mqttPassword = preferences.getString("mqttPwd", "password");
+    wifiSSID = preferences.getString("wifiID", "");
+    wifiPassword = preferences.getString("wifiPwd", "");
+    thermostatMode = preferences.getString("thermoMd", "off");
+    fanMode = preferences.getString("fanMd", "auto");
+    timeZone = preferences.getString("tz", "CST6CDT,M3.2.0,M11.1.0");
+    use24HourClock = preferences.getBool("use24Clk", true);
+    hydronicHeatingEnabled = preferences.getBool("hydHeat", false);
+    hydronicTempLow = preferences.getFloat("hydLow", 110.0);
+    hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
+    hostname = preferences.getString("host", "ESP32-Simple-Thermostat");
+    stage1MinRuntime = preferences.getUInt("stg1MnRun", 300);
+    stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
+    stage2HeatingEnabled = preferences.getBool("stg2HeatEn", false);
+    stage2CoolingEnabled = preferences.getBool("stg2CoolEn", false);
+    
+    // Debug print to confirm settings are loaded
+    Serial.println("Loading settings:");
+    Serial.print("setTempHeat: "); Serial.println(setTempHeat);
+    Serial.print("setTempCool: "); Serial.println(setTempCool);
+    Serial.print("setTempAuto: "); Serial.println(setTempAuto);
+    Serial.print("tempSwing: "); Serial.println(tempSwing);
+    Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
+    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
+    Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
+    Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
+    Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
+    Serial.print("fanMinutesPerHour: "); Serial.println(fanMinutesPerHour);
+    Serial.print("mqttServer: "); Serial.println(mqttServer);
+    Serial.print("mqttPort: "); Serial.println(mqttPort);
+    Serial.print("mqttUsername: "); Serial.println(mqttUsername);
+    Serial.print("mqttPassword: "); Serial.println(mqttPassword);
+    Serial.print("wifiSSID: "); Serial.println(wifiSSID);
+    Serial.print("wifiPassword: "); Serial.println(wifiPassword);
+    Serial.print("thermostatMode: "); Serial.println(thermostatMode);
+    Serial.print("fanMode: "); Serial.println(fanMode);
+    Serial.print("timeZone: "); Serial.println(timeZone);
+    Serial.print("use24HourClock: "); Serial.println(use24HourClock);
+    Serial.print("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
+    Serial.print("hydronicTempLow: "); Serial.println(hydronicTempLow);
+    Serial.print("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
+    Serial.print("hostname: "); Serial.println(hostname);
+    Serial.print("stage1MinRuntime: "); Serial.println(stage1MinRuntime);
+    Serial.print("stage2TempDelta: "); Serial.println(stage2TempDelta);
+    Serial.print("stage2HeatingEnabled: "); Serial.println(stage2HeatingEnabled);
+    Serial.print("stage2CoolingEnabled: "); Serial.println(stage2CoolingEnabled);
+
+    // Debug print to confirm settings are loaded
+    Serial.print("Settings loaded.");
+}
+
+
+
+float convertCtoF(float celsius)
+{
+    return celsius * 9.0 / 5.0 + 32.0;
+}
+
+void saveWiFiSettings()
+{
+    preferences.putString("wifiSSID", wifiSSID);
+    preferences.putString("wifiPassword", wifiPassword);
+}
+
+
+
+
+
+void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
+{
+    // Add touch debounce mechanism to prevent accidental double touches
+    static unsigned long lastTouchTime = 0;
+    unsigned long currentTime = millis();
+    
+    // If less than 300ms has passed since the last touch, ignore this touch
+    if (currentTime - lastTouchTime < 300) {
+        return;
+    }
+    
+    // Only process keyboard touches if we're in WiFi setup mode
+    if (!inWiFiSetupMode) {
+        return;
+    }
+    
+    // Check if touch is within the keyboard area
+    if (y < 60) {  // Touch is above the keyboard, ignore
+        return;
+    }
+    
+    // Process touch within keyboard area
+    for (int row = 0; row < 5; row++)
+    {
+        for (int col = 0; col < 10; col++)
+        {
+            int keyWidth = 25;  // Reduced by 10%
+            int keyHeight = 25; // Reduced by 10%
+            int xOffset = 18;   // Adjusted for reduced size
+            int yOffset = 81;   // Adjusted for reduced size
+
+            if (x > col * (keyWidth + 3) + xOffset && x < col * (keyWidth + 3) + xOffset + keyWidth &&
+                y > row * (keyHeight + 3) + yOffset && y < row * (keyHeight + 3) + yOffset + keyHeight)
+            {
+                Serial.print("Key pressed at row: ");
+                Serial.print(row);
+                Serial.print(", col: ");
+                Serial.println(col);
+                
+                // Process the key press
+                handleKeyPress(row, col);
+                
+                // Update last touch time for debounce
+                lastTouchTime = currentTime;
+                
+                // Exit after processing a key press to prevent multiple key detection
+                return;
+            }
+        }
+    }
+}
+
+void checkBootButton() {
+    static bool bootButtonPressed = false;
+    static unsigned long bootButtonPressStart = 0;
+    const unsigned long FACTORY_RESET_PRESS_TIME = 5000; // 5 seconds
+    
+    bool currentBootButtonState = digitalRead(BOOT_BUTTON) == LOW;
+    
+    if (currentBootButtonState && !bootButtonPressed) {
+        bootButtonPressed = true;
+        bootButtonPressStart = millis();
+        diagnosticPrint("Boot button pressed - hold for 5 seconds to factory reset");
+    } else if (!currentBootButtonState && bootButtonPressed) {
+        bootButtonPressed = false;
+        diagnosticPrint("Boot button released");
+    }
+    
+    if (bootButtonPressed && (millis() - bootButtonPressStart > FACTORY_RESET_PRESS_TIME)) {
+        diagnosticPrint("FACTORY RESET TRIGGERED!");
+        bootButtonPressed = false; // Prevent multiple triggers
+        restoreDefaultSettings();
+    }
+}
+
+void restoreDefaultSettings()
+{
+    setTempHeat = 72.0;
+    setTempCool = 76.0;
+    setTempAuto = 74.0;
+    tempSwing = 1.0;
+    autoTempSwing = 1.5;
+    autoChangeover = true;
+    fanRelayNeeded = false;
+    useFahrenheit = true;
+    mqttEnabled = false;
+    wifiSSID = "";
+    wifiPassword = "";
+    fanMinutesPerHour = 15;
+    mqttServer = "0.0.0.0";
+    mqttUsername = "mqtt";
+    mqttPassword = "password";
+    thermostatMode = "off";
+    fanMode = "auto";
+    timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Reset time zone to default
+    use24HourClock = true; // Reset clock format to default
+    hydronicHeatingEnabled = false; // Reset hydronic heating setting to default
+    hostname = "ESP32-Simple-Thermostat"; // Reset hostname to default
+
+    mqttPort = 1883; // Reset MQTT port default
+    hydronicTempLow = 110.0; // Reset hydronic low temp
+    hydronicTempHigh = 130.0; // Reset hydronic high temp
+    stage2HeatingEnabled = false; // Reset stage 2 heating enabled to default
+    stage2CoolingEnabled = false; // Reset stage 2 cooling enabled to default
+
+    saveSettings();
+
+    // Reset the ESP32
+    ESP.restart();
+}
+
+// ==== EVENT-DRIVEN FUNCTION IMPLEMENTATIONS ====
+
+void handleTouchInput() {
+    // ULTRA-PRIORITY touch detection - block ALL background tasks when touch is active
+    static uint16_t touchX, touchY;
+    static unsigned long lastTouchTime = 0;
+    static bool lastTouchState = false;
+    static unsigned long touchActiveUntil = 0;
+    
+    unsigned long now = millis();
+    
+    // Get raw touch data - fastest possible method
+    uint16_t rawX, rawY;
+    bool touchDetected = false;
+    
+    // Use getTouchRaw for maximum speed
+    tft.getTouchRaw(&rawX, &rawY);
+    uint16_t pressure = tft.getTouchRawZ();
+    
+    // Touch detected if pressure is above threshold
+    if (pressure > 350) { // Lower threshold for faster response
+        // Convert raw coordinates to screen coordinates
+        tft.convertRawXY(&rawX, &rawY);
+        touchX = rawX;
+        touchY = rawY;
+        touchDetected = true;
+        touchActiveUntil = now + 100; // Block background tasks for minimal time since we removed heavy operations
+    }
+    
+    // Set global flag to block background tasks during touch activity
+    touchPriorityActive = (now < touchActiveUntil);
+    
+    // FIXED BUZZER - separate LEDC channels for backlight and buzzer
+    if (touchDetected && !lastTouchState) {
+        // New touch detected - full duration now that channels are separated
+        if (now - lastTouchTime > 125) {
+            tone(17, 4000, 125); // Back to original 125ms duration
+            
+            diagnosticPrintf("TOUCH DETECTED: X=%d, Y=%d, P=%d - Processing button", 
+                           touchX, touchY, pressure);
+            
+            // Process button press - restore button functionality
+            handleButtonPress(touchX, touchY);
+            
+            lastTouchTime = now;
+        }
+        lastTouchState = true;
+    } else if (!touchDetected && lastTouchState) {
+        // Touch released 
+        lastTouchState = false;
+        diagnosticPrint("TOUCH RELEASED");
+    }
+}
+
+
+void controlHVACSystem() {
+    // HVAC control logic - non-blocking
+    controlRelays(currentTemp);
+    controlFanSchedule();
+}
+
+void readSensorsNonBlocking() {
+    // TRUE non-blocking sensor reading using state machine to eliminate ALL blocking
+    static unsigned long lastReadAttempt = 0;
+    static float cachedTemp = 75.0;
+    static float cachedHumidity = 50.0;
+    static bool sensorInitialized = false;
+    static unsigned long sensorReadCount = 0;
+    
+    unsigned long now = millis();
+    
+    // Only attempt sensor read every 45 seconds to minimize any potential blocking
+    if (now - lastReadAttempt < 45000) {
+        // Use cached values - never block waiting for sensors
+        currentTemp = cachedTemp;
+        currentHumidity = cachedHumidity;
+        return;
+    }
+    
+    // Initialize sensor reading state if not done
+    if (!sensorInitialized) {
+        // Quick sensor availability check - if this fails, skip sensor entirely
+        // Silent sensor check - no debug prints to prevent blocking
+        Wire.beginTransmission(0x38);
+        if (Wire.endTransmission() != 0) {
+            diagnosticPrint("AHT20 not responding - using simulated values");
+            cachedTemp = 72.0;  // Reasonable default
+            cachedHumidity = 45.0;  // Reasonable default
+            currentTemp = cachedTemp;
+            currentHumidity = cachedHumidity;
+            lastReadAttempt = now;
+            return;
+        }
+        sensorInitialized = true;
+    }
+    
+    // Attempt sensor read with ZERO tolerance for blocking
+    // Silent sensor read - no debug prints to prevent blocking
+    
+    // Create a separate task-like approach using static state
+    static enum {
+        SENSOR_IDLE,
+        SENSOR_READING,
+        SENSOR_COMPLETE
+    } sensorState = SENSOR_IDLE;
+    
+    static unsigned long readStartTime = 0;
+    
+    switch (sensorState) {
+        case SENSOR_IDLE:
+            // Start sensor read
+            readStartTime = millis();
+            sensorState = SENSOR_READING;
+            // Fall through to reading immediately
+            
+        case SENSOR_READING:
+            // Check if we've been reading too long (abort after 10ms)
+            if (millis() - readStartTime > 10) {
+                diagnosticPrint("Sensor read timeout - using cached values");
+                sensorState = SENSOR_IDLE;
+                lastReadAttempt = now;
+                currentTemp = cachedTemp;
+                currentHumidity = cachedHumidity;
+                return;
+            }
+            
+            // Try to read sensor data
+            sensors_event_t humidity, temp;
+            aht.getEvent(&humidity, &temp);
+            
+            // Check if reading completed within time limit
+            if (millis() - readStartTime < 10) {
+                float newTemp = useFahrenheit ? (temp.temperature * 9.0 / 5.0 + 32.0) : temp.temperature;
+                float newHumidity = humidity.relative_humidity;
+                
+                if (!isnan(newTemp) && !isnan(newHumidity) && 
+                    newTemp > 0 && newTemp < 150 && newHumidity > 0 && newHumidity < 100) {
+                    cachedTemp = newTemp;
+                    cachedHumidity = newHumidity;
+                    currentTemp = newTemp;
+                    currentHumidity = newHumidity;
+                    sensorReadCount++;
+                    diagnosticPrintf("Ultra-fast sensor #%lu: %.1fF, %.1f%%", sensorReadCount, newTemp, newHumidity);
+                } else {
+                    diagnosticPrint("Invalid sensor data - using cached values");
+                    currentTemp = cachedTemp;
+                    currentHumidity = cachedHumidity;
+                }
+            } else {
+                // Silent timeout - using cached values (no debug print to prevent blocking)
+                currentTemp = cachedTemp;
+                currentHumidity = cachedHumidity;
+            }
+            
+            sensorState = SENSOR_IDLE;
+            lastReadAttempt = now;
+            break;
+            
+        case SENSOR_COMPLETE:
+            // Should never reach here
+            sensorState = SENSOR_IDLE;
+            break;
+    }
+    
+    // DS18B20 completely disabled to prevent any blocking
+}
+
+void handleWiFiAndMQTT() {
+    // WiFi and MQTT handling - lowest priority background task
+    if (WiFi.status() != WL_CONNECTED && wifiSSID.length() > 0) {
+        // Quick WiFi reconnection attempt
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        // Don't wait for connection - check on next cycle
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!mqttClient.connected()) {
+            // Quick MQTT reconnection attempt
+            reconnectMQTT();
+        }
+        
+        if (mqttClient.connected()) {
+            mqttClient.loop();
+            sendMQTTData();
+        }
+    }
+}

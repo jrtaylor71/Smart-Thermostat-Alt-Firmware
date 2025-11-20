@@ -114,19 +114,37 @@ float tempSwing = 1.0;       // Standard hysteresis (°F)
 float autoTempSwing = 3.0;   // Auto mode hysteresis (°F)
 ```
 
-### Hardware Pin Definitions
+### Hardware Pin Definitions (ESP32-S3 - FROM SCHEMATIC)
 ```cpp
-// TFT Display pins
-#define TFT_MISO 19, TFT_MOSI 23, TFT_SCLK 18
-#define TFT_CS 15, TFT_DC 2, TFT_RST -1, TOUCH_CS 4
+// Display (TFT_eSPI - ILI9341) - VERIFIED FROM SCHEMATIC
+#define TFT_MISO 21    // SPI MISO (shared with touch)
+#define TFT_MOSI 12    // SPI MOSI (shared with touch)
+#define TFT_SCLK 13    // SPI Clock (shared with touch)
+#define TFT_CS   9     // TFT Chip Select
+#define TFT_DC   11    // Data/Command
+#define TFT_RST  10    // Reset
+#define TFT_BL   14    // Backlight
 
-// Sensor pins  
-#define DHTPIN 22, #define ONE_WIRE_BUS 27
+// Touch Controller (XPT2046) - VERIFIED FROM SCHEMATIC
+#define TOUCH_CS   47  // Touch Chip Select
+#define TOUCH_IRQ  48  // Touch Interrupt
+// Touch shares SPI pins with TFT: MISO=21, MOSI=12, SCLK=13
 
-// Relay control pins
-const int heatRelay1Pin = 13, heatRelay2Pin = 12
-const int coolRelay1Pin = 14, coolRelay2Pin = 26
-const int fanRelayPin = 25
+// HVAC Relays - VERIFIED FROM SCHEMATIC
+const int heatRelay1Pin = 5;   // Heat Stage 1
+const int heatRelay2Pin = 7;   // Heat Stage 2
+const int coolRelay1Pin = 6;   // Cool Stage 1
+const int coolRelay2Pin = 39;  // Cool Stage 2
+const int fanRelayPin = 4;     // Fan Control
+
+// Sensors - VERIFIED FROM SCHEMATIC
+#define ONE_WIRE_BUS 34   // DS18B20 Temperature (for hydronic)
+#define AHT20_SDA    36   // I2C SDA (temperature/humidity)
+#define AHT20_SCL    35   // I2C SCL (temperature/humidity)
+#define LIGHT_SENSOR 8    // Light sensor
+
+// Diagnostic Serial - VERIFIED WORKING
+// TX = 43, RX = 44  // Serial1 for /dev/ttyUSB0 monitoring
 ```
 
 ### MQTT Configuration
@@ -295,4 +313,211 @@ lib_deps =
 - Check power supply stability and grounding
 - Test web interface accessibility across network
 
-This copilot configuration provides comprehensive context for AI-assisted development while maintaining the project's existing architecture and coding patterns.
+## Hardware Configuration Details
+
+### Current Hardware Specification
+- **MCU**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
+- **Display**: ILI9341 TFT (320x240) with XPT2046 touch controller
+- **Board Version**: smart-thermostat hardware v0.04
+- **Reference Project**: /home/jonnt/Documents/smart-thermostat
+
+### Hardware Status Tracking
+- ✅ ESP32-S3 platform migration complete
+- ✅ Custom board configuration working  
+- ✅ TFT_eSPI crash FIXED with custom pin config
+- ✅ Display output working with backlight control
+- ✅ All sensor libraries working (AHT20 replacing DHT11)
+- ✅ DS18B20 working on correct GPIO34
+- ✅ Relay control pins identified from schematic
+- ✅ Diagnostic UART working on Serial1 (TX=43, RX=44)
+- ✅ Full thermostat code migrated with all features
+- ✅ Touch screen calibration working with new display
+- ✅ Button touch detection functional
+
+### Critical Hardware Notes
+- **SPI Bus Sharing**: TFT and Touch share MISO/MOSI/SCLK but have separate CS pins (TFT_CS=9, TOUCH_CS=47)
+- **Touch Controller**: XPT2046 requires proper pin configuration for reliable operation
+- **Pin Verification**: All pins verified from actual hardware schematic
+- **Monitor Command**: Use `pio device monitor --port /dev/ttyUSB0 --baud 115200` for diagnostic output
+
+### Configuration Files
+- `platformio.ini` - Custom TFT_eSPI build flags for ESP32-S3
+- `boards/esp32-s3-thermostat.json` - Custom board definition
+- `variants/esp32-s3-thermostat/pins_arduino.h` - Pin definitions
+- `default_16mb.csv` - Custom partition table
+
+This copilot configuration provides comprehensive context for AI-assisted development while maintaining the project's existing architecture and hardware-specific requirements.
+
+## Special Commands
+
+### ESP32 Chip Erase Command
+When requested to erase the ESP32-S3 chip completely, use this command:
+```bash
+esptool.py --chip esp32-s3 -p /dev/ttyACM0 erase_flash
+```
+
+This command will:
+- Target the ESP32-S3 chip specifically
+- Use the /dev/ttyACM0 port (standard for this project)
+- Completely erase all flash memory including:
+  - Application code
+  - WiFi settings
+  - Calibration data
+  - All stored preferences
+  - Bootloader (will need to be reflashed)
+
+## Critical Development Warnings
+
+### Terminal Command State Tracking Issue
+**IMPORTANT**: There is a known issue where AI assistants may reference cached/old terminal output and incorrectly assume recent commands have executed successfully. This leads to:
+
+- Incorrect assumptions about compilation status
+- Wrong information about system state
+- Wasted development time proceeding with failed operations
+- Loss of track of actual current state
+
+**Best Practices to Avoid This Issue**:
+1. Always wait for actual command completion before making assumptions
+2. Ask user to confirm results when uncertain about command execution
+3. Do not reference terminal output that might be from previous sessions
+4. Be explicit about distinguishing between assumed vs confirmed results
+5. When in doubt, re-run commands to verify current state
+
+**Terminal Management Best Practices**:
+1. **Close all unnecessary bash terminal sessions** - Multiple terminals can cause confusion with cached outputs
+2. **Use single dedicated terminal** - User should run commands manually in one terminal for uploads and monitoring
+3. **Let user execute critical commands** - User running `pio run`, `pio run -t upload`, and `pio device monitor` manually seems to prevent the caching issue
+4. **AI should avoid running compilation/upload commands** - Instead, provide the exact command for user to run
+5. **Clean terminal state** - Start fresh terminal sessions when troubleshooting
+
+**Specific to This Project**:
+- Always verify `pio run` compilation actually completes before proceeding
+- Don't assume upload success without seeing actual esptool output
+- Confirm serial monitor connection before analyzing output
+- Re-check file contents after edits to ensure changes were applied
+- **Recommended workflow**: User runs all PlatformIO commands manually in single terminal while AI only provides code changes and command text
+
+This issue has been reported to Anthropic for investigation and resolution.
+## Critical Design Philosophy Lessons
+
+### PERFORMANCE FIX CASE STUDY: The 5-Second Touch Delay Disaster
+
+**Background**: The ESP32-S3 thermostat had a 5-6 second delay between button presses and display updates, making the interface unusable.
+
+**The WRONG Approach (What NOT to do)**:
+- ❌ **Over-engineered solution**: Implemented complex dual-core task management
+- ❌ **Added unnecessary complexity**: Created modal UI overlays with `showModeSelection` flags  
+- ❌ **Broke working systems**: Rewrote button handling with complex coordinate mappings
+- ❌ **Introduced new bugs**: Created overlapping touch zones and coordinate confusion
+- ❌ **Made debugging harder**: Added hundreds of lines of complex state management
+- ❌ **Ignored root cause**: Spent time optimizing everything except the actual bottleneck
+
+**The CORRECT Approach (What SHOULD have been done)**:
+- ✅ **Profile first**: Use debug timing to identify the exact bottleneck
+- ✅ **Fix root cause**: The 5010ms delay was `getLocalTime()` timing out when WiFi offline
+- ✅ **Minimal fix**: Add ONE line: `if (WiFi.status() == WL_CONNECTED && getLocalTime(&timeinfo))`
+- ✅ **Result**: 5000ms → 0ms, problem solved with minimal code change
+
+### FUNDAMENTAL RULES FOR EMBEDDED SYSTEMS
+
+#### 1. **Profile Before Optimizing**
+```cpp
+// ALWAYS add timing debug to identify bottlenecks
+unsigned long start = millis();
+someFunction();
+unsigned long end = millis();
+Serial.printf("someFunction took %lu ms\n", end - start);
+```
+
+#### 2. **Fix Root Cause, Not Symptoms**
+- Don't optimize everything when only one function is slow
+- Don't rewrite working systems to fix unrelated problems
+- Use tools (debug timing, profiler) to find the ACTUAL bottleneck
+
+#### 3. **Simplicity Over Complexity**
+- **Working simple code** > **Broken complex code**
+- If existing code works, fix only what's broken
+- Avoid "improvements" that introduce new failure modes
+
+#### 4. **Interface Design for Embedded Systems**
+```cpp
+// GOOD: Simple, direct button handling
+if (x > 265 && x < 315 && y > 195 && y < 245) {  // + button
+    setTempHeat += 0.5;
+    updateDisplay();
+}
+
+// BAD: Complex modal state management  
+if (showModeSelection && buttonInModeArea) {
+    if (autoButtonPressed) { /* complex logic */ }
+    else if (heatButtonPressed) { /* more complex logic */ }
+    // ... leads to coordinate confusion and bugs
+}
+```
+
+#### 5. **Touch Interface Best Practices**
+- Use **generous, non-overlapping** touch zones
+- Implement **immediate visual feedback**  
+- Keep button logic **simple and direct**
+- Avoid modal interfaces that confuse users
+- Test on actual hardware, not just simulation
+
+#### 6. **Performance Debugging Process**
+1. **Add timing debug** around suspected slow operations
+2. **Identify the specific bottleneck** (don't guess)
+3. **Fix ONLY that specific issue** 
+4. **Verify the fix with timing measurements**
+5. **Remove debug code** once confirmed working
+6. **Don't touch anything else** that's working properly
+
+### SPECIFIC MISTAKES TO AVOID
+
+#### Code Architecture Mistakes
+- ❌ **Don't rewrite working UI systems** to fix unrelated performance issues
+- ❌ **Don't add dual-core complexity** unless absolutely necessary
+- ❌ **Don't create modal interfaces** on small embedded touchscreens
+- ❌ **Don't over-engineer coordinate systems** - simple ranges work fine
+
+#### Touch Interface Mistakes  
+- ❌ **Don't use overlapping touch zones** - leads to unpredictable behavior
+- ❌ **Don't make touch areas too small** - hard to hit reliably
+- ❌ **Don't implement complex gesture recognition** - keep it simple
+- ❌ **Don't assume touch coordinates** - always test on actual hardware
+
+#### Performance Optimization Mistakes
+- ❌ **Don't optimize everything** when only one function is slow
+- ❌ **Don't assume bottlenecks** - measure and confirm with debug timing
+- ❌ **Don't add complexity** to solve performance problems
+- ❌ **Don't break working code** while fixing unrelated issues
+
+### SUCCESS METRICS FOR FIXES
+
+#### Performance Fixes
+- ✅ **Measure before/after**: "5010ms → 0ms" (quantifiable improvement)
+- ✅ **Root cause fixed**: Address the actual slow function, not side effects
+- ✅ **Minimal code change**: Simple, focused fix with minimal complexity
+- ✅ **No regressions**: Existing functionality continues to work
+
+#### Interface Fixes
+- ✅ **Immediate response**: Button press → action within 100ms
+- ✅ **Predictable behavior**: Same touch always produces same result  
+- ✅ **Simple user model**: Clear, direct mapping between touch and action
+- ✅ **Reliable operation**: Works consistently across temperature/humidity variations
+
+### WHEN TO APPLY THESE RULES
+
+**Always apply these rules when:**
+- User reports performance issues
+- Interface feels slow or unresponsive  
+- Touch inputs don't work reliably
+- System has intermittent failures
+
+**Red flags that indicate over-engineering:**
+- Adding new frameworks to fix simple bugs
+- Implementing complex state machines for basic UI
+- Creating "robust" solutions that introduce new failure modes
+- Rewriting working code to fix unrelated problems
+
+**The golden rule**: **If it ain't broke, don't fix it.** Focus laser-precision on the actual problem and resist the urge to "improve" working systems while fixing unrelated issues.
+
+This case study cost several hours of debugging and resulted in a more complex, less reliable system before returning to the simple, working approach. The 5-second delay could have been fixed in 5 minutes with proper profiling and root cause analysis.
