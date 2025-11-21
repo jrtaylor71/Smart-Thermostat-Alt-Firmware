@@ -26,6 +26,8 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 
 ## 🚀 Quick Start
 
+![Hardware-Main-Display](img/KIMG20251120_183508010.JPG)
+
 ### Hardware Requirements
 - ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM) 
 - ILI9341 320x240 TFT LCD with XPT2046 Touch Controller
@@ -48,7 +50,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 Access the thermostat's web interface by navigating to its IP address:
 
 ### Status Page
-![Web Status](https://github.com/jrtaylor71/ESmart-Thermostat-Alt-Firmware/blob/main/img/web-status.png)
+![Web Status](img/Screenshot from 2025-11-20 18-39-53.png)
 
 Real-time monitoring of:
 - Current temperature and humidity
@@ -57,7 +59,9 @@ Real-time monitoring of:
 - System status
 
 ### Settings Page
-![Web Settings](https://github.com/jrtaylor71/Smart-Thermostat-Alt-Firmware/blob/main/img/web-settings.png)
+![Web Settings](img/Screenshot from 2025-11-20 18-40-24.png)
+![Web Settings2](<img/Screenshot from 2025-11-20 18-40-45.png>)
+![Web Settings3](<img/Screenshot from 2025-11-20 18-41-20.png>)
 
 Complete configuration interface for:
 - Temperature setpoints and control modes
@@ -78,6 +82,9 @@ Automatic discovery and integration with Home Assistant:
 5. Supports climate entity with heating/cooling modes
 
 ## 🛠️ Advanced Features
+
+![System Tab](<img/Screenshot from 2025-11-20 18-41-44.png>)
+![System Tab1](<img/Screenshot from 2025-11-20 18-42-15.png>)
 
 ### Multi-Stage Operation
 - Intelligent staging based on time and temperature
