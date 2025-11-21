@@ -6,7 +6,8 @@
 	],
 	"settings": {
 		"files.associations": {
-			"esp32 thermostat": "cpp"
+			"esp32 thermostat": "cpp",
+			"cmath": "cpp"
 		}
 	}
 }

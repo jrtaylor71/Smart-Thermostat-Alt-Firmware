@@ -348,6 +348,12 @@ This copilot configuration provides comprehensive context for AI-assisted develo
 
 ## Special Commands
 
+### Build and Upload Command
+**ALWAYS use this command** for building and uploading firmware with automatic monitoring:
+```bash
+pio run --target upload && pio device monitor --port /dev/ttyUSB0 --baud 115200
+```
+
 ### ESP32 Chip Erase Command
 When requested to erase the ESP32-S3 chip completely, use this command:
 ```bash

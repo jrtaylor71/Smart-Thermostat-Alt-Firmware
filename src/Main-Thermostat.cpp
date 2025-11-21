@@ -72,6 +72,15 @@ DallasTemperature ds18b20(&oneWire);
 float hydronicTemp = 0.0;
 bool hydronicHeatingEnabled = false;
 
+// Hydronic system settings
+float hydronicTempLow = 110.0; // Default low temperature for hydronic heating
+float hydronicTempHigh = 130.0; // Default high temperature for hydronic heating
+
+// Hydronic alert tracking
+bool hydronicLowTempAlertSent = false; // Track if low temp alert has been sent
+unsigned long lastHydronicAlertTime = 0; // Track last alert time to prevent spam
+bool hydronicLockout = false; // Track hydronic safety lockout state
+
 // Light sensor and display dimming setup
 #define LIGHT_SENSOR_PIN 8 // Photocell/light sensor pin
 #define TFT_BACKLIGHT_PIN 14 // TFT backlight control pin
@@ -96,10 +105,6 @@ bool displaySleepEnabled = true; // Enable/disable display sleep mode
 unsigned long displaySleepTimeout = 300000; // Sleep after 5 minutes (300000ms) of inactivity
 bool displayIsAsleep = false; // Current display sleep state
 unsigned long lastInteractionTime = 0; // Last time user interacted with display
-
-// Hydronic heating settings
-float hydronicTempLow = 110.0; // Default low temperature for hydronic heating
-float hydronicTempHigh = 130.0; // Default high temperature for hydronic heating
 
 // Hybrid staging settings
 unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
@@ -193,7 +198,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.0.9"; // Software version
+const String sw_version = "1.1.0"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -330,6 +335,19 @@ void sensorTaskFunction(void *parameter) {
         if (!isnan(newTemp) && !isnan(newHumidity)) {
             currentTemp = newTemp;
             currentHumidity = newHumidity;
+        }
+        
+        // Read DS18B20 hydronic temperature sensor if present
+        if (ds18b20SensorPresent) {
+            ds18b20.requestTemperatures();
+            float hydTempC = ds18b20.getTempCByIndex(0);
+            if (hydTempC != DEVICE_DISCONNECTED_C && hydTempC != -127.0 && !isnan(hydTempC)) {
+                // Valid reading - convert to Fahrenheit if needed
+                hydronicTemp = useFahrenheit ? (hydTempC * 9.0 / 5.0 + 32.0) : hydTempC;
+            } else {
+                // Invalid reading - keep last valid reading, don't update
+                Serial.println("[WARNING] DS18B20 sensor reading failed or disconnected");
+            }
         }
         
         // Control HVAC relays
@@ -1635,6 +1653,54 @@ void sendMQTTData()
             lastFanMode = fanMode;
         }
 
+        // Publish hydronic temperature if hydronic heating is enabled
+        if (hydronicHeatingEnabled)
+        {
+            String hydronicTempTopic = hostname + "/hydronic_temperature";
+            mqttClient.publish(hydronicTempTopic.c_str(), String(hydronicTemp, 1).c_str(), true);
+        }
+
+        // Monitor hydronic boiler water temperature and send alerts
+        Serial.printf("[DEBUG] Hydronic Alert Check: enabled=%s, temp=%.1f, tempValid=%s\n",
+                     hydronicHeatingEnabled ? "YES" : "NO", 
+                     hydronicTemp,
+                     !isnan(hydronicTemp) ? "YES" : "NO");
+                     
+        if (hydronicHeatingEnabled && !isnan(hydronicTemp))
+        {
+            Serial.printf("[DEBUG] Hydronic Logic: temp=%.1f < threshold=%.1f? %s, alertSent=%s\n",
+                         hydronicTemp, hydronicTempLow,
+                         (hydronicTemp < hydronicTempLow) ? "YES" : "NO",
+                         hydronicLowTempAlertSent ? "YES" : "NO");
+            
+            // Check if temperature dropped below setpoint and we haven't sent alert yet
+            if (hydronicTemp < hydronicTempLow && !hydronicLowTempAlertSent)
+            {
+                // Send alert to Home Assistant
+                String alertTopic = hostname + "/hydronic_alert";
+                String alertMessage = "ALERT: Boiler water temperature (" + String(hydronicTemp, 1) + "°F) is below setpoint (" + String(hydronicTempLow, 1) + "°F)";
+                mqttClient.publish(alertTopic.c_str(), alertMessage.c_str(), false);
+                
+                // Also send to Home Assistant notification service
+                String haTopic = "homeassistant/notify/thermostat_alerts";
+                String haMessage = "{\"title\":\"Boiler Alert\",\"message\":\"" + alertMessage + "\"}";
+                mqttClient.publish(haTopic.c_str(), haMessage.c_str(), false);
+                
+                // Set flag to prevent duplicate alerts
+                hydronicLowTempAlertSent = true;
+                preferences.putBool("hydAlertSent", hydronicLowTempAlertSent);
+                Serial.println("MQTT: Hydronic low temperature alert sent");
+            }
+            // Reset alert flag only when temperature recovers above HIGH threshold (hysteresis)
+            else if (hydronicTemp >= hydronicTempHigh && hydronicLowTempAlertSent)
+            {
+                hydronicLowTempAlertSent = false;
+                preferences.putBool("hydAlertSent", hydronicLowTempAlertSent);
+                Serial.printf("MQTT: Hydronic temperature recovered to %.1f°F (above %.1f°F) - alert reset\n", 
+                             hydronicTemp, hydronicTempHigh);
+            }
+        }
+
         // Publish availability
         String availabilityTopic = hostname + "/availability";
         mqttClient.publish(availabilityTopic.c_str(), "online", true);
@@ -1862,20 +1928,73 @@ void turnOffAllRelays()
 void activateHeating() {
     Serial.printf("[DEBUG] activateHeating() ENTRY: stage1Active=%d, stage2Active=%d\n", stage1Active, stage2Active);
     
-    if (hydronicHeatingEnabled) {
-        if (hydronicTemp <= hydronicTempLow) {
-            // Pause heating if hydronic temperature is too low
+    // Hydronic boiler safety interlock - prevent heating if boiler water is too cold
+    if (hydronicHeatingEnabled && !isnan(hydronicTemp)) {
+        Serial.printf("[DEBUG] Hydronic Safety Check: temp=%.1f, low=%.1f, high=%.1f\n", 
+                     hydronicTemp, hydronicTempLow, hydronicTempHigh);
+        
+        // If water temperature is below low threshold, disable heating completely
+        if (hydronicTemp < hydronicTempLow) {
+            Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F below threshold %.1f°F - DISABLING HEATING\n", 
+                         hydronicTemp, hydronicTempLow);
+            
+            // Turn off all heating relays immediately
+            digitalWrite(heatRelay1Pin, LOW);
+            digitalWrite(heatRelay2Pin, LOW);
+            
+            // Reset heating state
+            heatingOn = false;
+            stage1Active = false;
+            stage2Active = false;
+            
+            // Keep fan running if needed (to circulate existing warm air)
+            if (fanMode == "on" || fanMode == "cycle") {
+                if (!fanOn) {
+                    Serial.println("[LOCKOUT] Keeping fan on for air circulation");
+                    digitalWrite(fanRelayPin, HIGH);
+                    fanOn = true;
+                }
+            }
+            
+            updateStatusLEDs(); // Update LED to show heating is off
+            setDisplayUpdateFlag(); // Update display
+            return; // Exit - no heating allowed
+        }
+        
+        // Only allow heating to resume when temperature is above high threshold (hysteresis)
+        // This prevents rapid on/off cycling as temperature fluctuates around the low threshold
+        if (hydronicTemp < hydronicTempLow) {
+            if (!hydronicLockout) {
+                hydronicLockout = true;
+                Serial.printf("[LOCKOUT] Hydronic lockout ACTIVATED - temp %.1f°F below %.1f°F\n", 
+                             hydronicTemp, hydronicTempLow);
+            }
+        } else if (hydronicTemp > hydronicTempHigh) {
+            if (hydronicLockout) {
+                Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F above recovery threshold %.1f°F - ENABLING HEATING\n", 
+                             hydronicTemp, hydronicTempHigh);
+                hydronicLockout = false;
+            }
+        }
+        
+        // If still in lockout state, prevent heating
+        if (hydronicLockout) {
+            Serial.printf("[LOCKOUT] Hydronic lockout active - waiting for temp to reach %.1f°F (currently %.1f°F)\n", 
+                         hydronicTempHigh, hydronicTemp);
+            
+            // Turn off heating relays but allow normal state management
             digitalWrite(heatRelay1Pin, LOW);
             digitalWrite(heatRelay2Pin, LOW);
             heatingOn = false;
             stage1Active = false;
             stage2Active = false;
-            Serial.println("Hydronics too cold, pausing heating");
+            
+            updateStatusLEDs();
+            setDisplayUpdateFlag();
             return;
-        } else if (hydronicTemp >= hydronicTempHigh) {
-            // Resume heating if hydronic temperature is high enough
-            // Continue with normal heating logic below
         }
+        
+        Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F OK - heating allowed\n", hydronicTemp);
     }
 
     // Default heating behavior with hybrid staging
@@ -2500,6 +2619,24 @@ void updateDisplay(float currentTemp, float currentHumidity)
         prevHydronicDisplayState = false;
     }
 
+    // Display hydronic lockout warning if active
+    static bool prevHydronicLockoutDisplay = false;
+    if (hydronicHeatingEnabled && hydronicLockout) {
+        if (!prevHydronicLockoutDisplay) {
+            // Show lockout warning
+            tft.fillRect(10, 20, 200, 30, COLOR_WARNING);
+            tft.setTextColor(TFT_BLACK, COLOR_WARNING);
+            tft.setTextSize(2);
+            tft.setCursor(15, 30);
+            tft.print("BOILER LOCKOUT");
+            prevHydronicLockoutDisplay = true;
+        }
+    } else if (prevHydronicLockoutDisplay) {
+        // Clear lockout warning
+        tft.fillRect(10, 20, 200, 30, COLOR_BACKGROUND);
+        prevHydronicLockoutDisplay = false;
+    }
+
     // Update set temperature only if it has changed and mode is not "off"
     if (thermostatMode != "off")
     {
@@ -2640,6 +2777,7 @@ void saveSettings()
     preferences.putBool("hydHeat", hydronicHeatingEnabled);
     preferences.putFloat("hydLow", hydronicTempLow);
     preferences.putFloat("hydHigh", hydronicTempHigh);
+    preferences.putBool("hydAlertSent", hydronicLowTempAlertSent);
     preferences.putString("host", hostname);
     preferences.putUInt("stg1MnRun", stage1MinRuntime);
     preferences.putFloat("stg2Delta", stage2TempDelta);
@@ -2681,6 +2819,7 @@ void loadSettings()
     hydronicHeatingEnabled = preferences.getBool("hydHeat", false);
     hydronicTempLow = preferences.getFloat("hydLow", 110.0);
     hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
+    hydronicLowTempAlertSent = preferences.getBool("hydAlertSent", false);
     hostname = preferences.getString("host", "Smart-Thermostat-Alt");
     stage1MinRuntime = preferences.getUInt("stg1MnRun", 300);
     stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
@@ -2716,6 +2855,7 @@ void loadSettings()
     Serial.print("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
     Serial.print("hydronicTempLow: "); Serial.println(hydronicTempLow);
     Serial.print("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
+    Serial.print("hydronicLowTempAlertSent: "); Serial.println(hydronicLowTempAlertSent);
     Serial.print("hostname: "); Serial.println(hostname);
     Serial.print("stage1MinRuntime: "); Serial.println(stage1MinRuntime);
     Serial.print("stage2TempDelta: "); Serial.println(stage2TempDelta);
@@ -2876,6 +3016,7 @@ void restoreDefaultSettings()
     mqttPort = 1883; // Reset MQTT port default
     hydronicTempLow = 110.0; // Reset hydronic low temp
     hydronicTempHigh = 130.0; // Reset hydronic high temp
+    hydronicLowTempAlertSent = false; // Reset hydronic alert state
     stage2HeatingEnabled = false; // Reset stage 2 heating enabled to default
     stage2CoolingEnabled = false; // Reset stage 2 cooling enabled to default
     tempOffset = 0.0; // Reset temperature calibration offset to default
