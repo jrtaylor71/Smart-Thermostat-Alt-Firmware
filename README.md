@@ -50,7 +50,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 Access the thermostat's web interface by navigating to its IP address:
 
 ### Status Page
-![Web Status](img/Screenshot from 2025-11-20 18-39-53.png)
+![Web Status](<img/Screenshot from 2025-11-20 18-39-53.png>)
 
 Real-time monitoring of:
 - Current temperature and humidity
@@ -59,7 +59,7 @@ Real-time monitoring of:
 - System status
 
 ### Settings Page
-![Web Settings](img/Screenshot from 2025-11-20 18-40-24.png)
+![Web Settings](<img/Screenshot from 2025-11-20 18-40-24.png>)
 ![Web Settings2](<img/Screenshot from 2025-11-20 18-40-45.png>)
 ![Web Settings3](<img/Screenshot from 2025-11-20 18-41-20.png>)
 
