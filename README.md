@@ -76,6 +76,10 @@ Access the thermostat's web interface by navigating to its IP address:
 - Schedule enable/disable and override controls
 - All options always visible - no hidden menus
 
+![Schedule](<img/Screenshot from 2025-11-21 11-53-09.png>)
+![Schedule1](<img/Screenshot from 2025-11-21 11-54-01.png>)
+![Schedule2](<img/Screenshot from 2025-11-21 11-54-33.png>)
+
 **System Tab**: Device information and firmware updates
 
 ## 🏠 Home Assistant Integration
