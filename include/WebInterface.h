@@ -430,6 +430,117 @@ body {
   0% { opacity: 0; transform: translateY(10px); }
   100% { opacity: 1; transform: translateY(0); }
 }
+
+/* Schedule table styles */
+.schedule-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: white;
+  margin: 16px 0;
+}
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr 2fr 1fr 2fr;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  align-items: center;
+}
+
+.schedule-row:last-child {
+  border-bottom: none;
+}
+
+.schedule-header {
+  background: var(--primary-color);
+  color: white;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.schedule-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 40px;
+}
+
+.schedule-cell:first-child {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.temp-inputs {
+  display: flex;
+  gap: 4px;
+  flex-direction: column;
+}
+
+.temp-input {
+  width: 70px !important;
+  min-width: 70px;
+  font-size: 0.85rem;
+  padding: 4px 6px;
+}
+
+.time-input {
+  width: 90px !important;
+  min-width: 90px;
+  font-size: 0.85rem;
+  padding: 4px 6px;
+}
+
+.toggle-switch.small {
+  transform: scale(0.8);
+}
+
+/* Responsive schedule table */
+@media (max-width: 768px) {
+  .schedule-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    text-align: left;
+  }
+  
+  .schedule-cell {
+    justify-content: flex-start;
+    text-align: left;
+    padding: 4px 0;
+  }
+  
+  .schedule-header .schedule-cell {
+    display: none;
+  }
+  
+  .schedule-header::before {
+    content: "Schedule Configuration";
+    font-weight: 600;
+  }
+  
+  .temp-inputs {
+    flex-direction: row;
+    gap: 8px;
+  }
+  
+  .temp-input, .time-input {
+    width: auto !important;
+    min-width: 60px;
+    flex: 1;
+  }
+}
+
+.temp-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-color);
+  margin-bottom: 2px;
+  display: block;
+}
 </style>
 )";
 
@@ -453,6 +564,16 @@ const char* ICON_FAN = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="curre
 const char* ICON_UPDATE = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/></svg>)";
 
 const char* ICON_RESET = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2C13.1,2 14,2.9 14,4C14,5.1 13.1,6 12,6C10.9,6 10,5.1 10,4C10,2.9 10.9,2 12,2M21,9V7L15,13L21,19V17H23V9H21M1,9V17H3V19L9,13L3,7V9H1Z"/></svg>)";
+
+const char* ICON_CLOCK = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z"/></svg>)";
+
+const char* ICON_CALENDAR = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19,3H18V1H16V3H8V1H6V3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5A2,2 0 0,0 19,3M19,19H5V8H19V19M5,6V5H6V6H8V5H16V6H18V5H19V6H19V8H5V6Z"/></svg>)";
+
+const char* ICON_SCHEDULE = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M14,12H15.5V14.82L17.94,16.23L17.19,17.53L14,15.69V12M4,2V4H5V20A2,2 0 0,0 7,22H11.4C11,21.4 10.6,20.73 10.33,20H7V4H8V2H10V4H14V2H16V4H17A2,2 0 0,1 19,6V10.1C19.74,10.36 20.42,10.73 21,11.19V6A2,2 0 0,0 19,4H18V2H16M18.5,13.5A6.5,6.5 0 0,1 12,20A6.5,6.5 0 0,1 5.5,13.5A6.5,6.5 0 0,1 12,7A6.5,6.5 0 0,1 18.5,13.5Z"/></svg>)";
+
+const char* ICON_BACK = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"/></svg>)";
+
+const char* ICON_SAVE = R"(<svg class="card-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M15,9H5V5H15M12,19A3,3 0 0,1 9,16A3,3 0 0,1 12,13A3,3 0 0,1 15,16A3,3 0 0,1 12,19M17,3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3Z"/></svg>)";
 
 // JavaScript for dynamic functionality
 const char* JAVASCRIPT_CODE = R"(

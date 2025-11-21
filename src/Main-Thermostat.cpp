@@ -221,6 +221,30 @@ bool fanOn = false;
 String thermostatMode = "off"; // Default thermostat mode
 String fanMode = "auto"; // Default fan mode
 
+// 7-Day Scheduling System (structures defined in WebPages.h)
+DaySchedule weekSchedule[7] = {
+    // Sunday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Monday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Tuesday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Wednesday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Thursday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Friday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true},
+    // Saturday
+    {{6, 0, 72.0, 76.0, 74.0, true}, {22, 0, 68.0, 78.0, 73.0, true}, true}
+};
+
+bool scheduleEnabled = false;        // Master schedule enable/disable
+bool scheduleOverride = false;       // Temporary override active
+unsigned long overrideEndTime = 0;   // When override expires (0 = permanent)
+String activePeriod = "manual";      // Current active period: "day", "night", "manual"
+bool scheduleUpdatedFlag = false;    // Flag to indicate schedule needs to be saved
+
 // AHT20 sensor calibration offsets
 float tempOffset = 0.0; // Temperature offset in degrees (add to reading)
 float humidityOffset = 0.0; // Humidity offset in % (add to reading)
@@ -267,6 +291,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void sendMQTTData();
 void readLightSensor();
 void updateDisplayBrightness();
+
+// Schedule function prototypes
+void checkSchedule();
+void applySchedule(int dayOfWeek, bool isDayPeriod);
+void saveScheduleSettings();
+void loadScheduleSettings();
+String getCurrentPeriod();
+int getCurrentDayOfWeek();
 void setBrightness(int brightness);
 float getCalibratedTemperature(float rawTemp);
 float getCalibratedHumidity(float rawHumidity);
@@ -437,6 +469,192 @@ void setDisplayUpdateFlag() {
     }
 }
 
+// =============================================================================
+// SCHEDULING SYSTEM FUNCTIONS
+// =============================================================================
+
+// Get current day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+int getCurrentDayOfWeek() {
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    return timeinfo.tm_wday;
+}
+
+// Get current period description
+String getCurrentPeriod() {
+    if (!scheduleEnabled) return "manual";
+    if (scheduleOverride) return "override";
+    return activePeriod;
+}
+
+// Check if we need to apply a scheduled temperature change
+void checkSchedule() {
+    if (!scheduleEnabled) return;
+    
+    // Get current time
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    
+    int currentHour = timeinfo.tm_hour;
+    int currentMinute = timeinfo.tm_min;
+    int currentDayOfWeek = timeinfo.tm_wday;
+    
+    // Check if override has expired
+    if (scheduleOverride && overrideEndTime > 0 && millis() >= overrideEndTime) {
+        scheduleOverride = false;
+        overrideEndTime = 0;
+        Serial.println("SCHEDULE: Override expired, resuming schedule");
+    }
+    
+    // Skip if override is active
+    if (scheduleOverride) return;
+    
+    // Skip if this day is not enabled
+    if (!weekSchedule[currentDayOfWeek].enabled) return;
+    
+    DaySchedule& today = weekSchedule[currentDayOfWeek];
+    
+    // Convert current time to minutes for easier comparison
+    int currentMinutes = currentHour * 60 + currentMinute;
+    int dayMinutes = today.day.hour * 60 + today.day.minute;
+    int nightMinutes = today.night.hour * 60 + today.night.minute;
+    
+    // Determine which period we should be in
+    String newPeriod = "manual";
+    bool shouldApplyDaySchedule = false;
+    bool shouldApplyNightSchedule = false;
+    
+    if (dayMinutes <= nightMinutes) {
+        // Normal case: day < night (e.g., 6:00 AM - 10:00 PM)
+        if (currentMinutes >= dayMinutes && currentMinutes < nightMinutes) {
+            newPeriod = "day";
+            shouldApplyDaySchedule = true;
+        } else {
+            newPeriod = "night";
+            shouldApplyNightSchedule = true;
+        }
+    } else {
+        // Cross-midnight case: night < day (e.g., 10:00 PM - 6:00 AM next day)
+        if (currentMinutes >= dayMinutes || currentMinutes < nightMinutes) {
+            newPeriod = "day";
+            shouldApplyDaySchedule = true;
+        } else {
+            newPeriod = "night";
+            shouldApplyNightSchedule = true;
+        }
+    }
+    
+    // Apply schedule if period changed
+    if (newPeriod != activePeriod) {
+        activePeriod = newPeriod;
+        if (shouldApplyDaySchedule && today.day.active) {
+            applySchedule(currentDayOfWeek, true);
+        } else if (shouldApplyNightSchedule && today.night.active) {
+            applySchedule(currentDayOfWeek, false);
+        }
+    }
+}
+
+// Apply scheduled temperatures
+void applySchedule(int dayOfWeek, bool isDayPeriod) {
+    DaySchedule& schedule = weekSchedule[dayOfWeek];
+    SchedulePeriod& period = isDayPeriod ? schedule.day : schedule.night;
+    
+    if (!period.active) return;
+    
+    // Apply temperatures
+    setTempHeat = period.heatTemp;
+    setTempCool = period.coolTemp;
+    setTempAuto = period.autoTemp;
+    
+    Serial.printf("SCHEDULE: Applied %s schedule for day %d - Heat: %.1f°F, Cool: %.1f°F, Auto: %.1f°F\n", 
+                  isDayPeriod ? "day" : "night", dayOfWeek, setTempHeat, setTempCool, setTempAuto);
+    
+    // Save settings and update MQTT
+    saveSettings();
+    if (mqttEnabled && mqttClient.connected()) {
+        mqttClient.publish("thermostat/setTempHeat", String(setTempHeat).c_str(), true);
+        mqttClient.publish("thermostat/setTempCool", String(setTempCool).c_str(), true);
+        mqttClient.publish("thermostat/activePeriod", activePeriod.c_str(), false);
+    }
+    
+    // Request display update
+    setDisplayUpdateFlag();
+}
+
+// Save schedule settings to preferences
+void saveScheduleSettings() {
+    preferences.putBool("schedEnabled", scheduleEnabled);
+    preferences.putBool("schedOverride", scheduleOverride);
+    preferences.putULong("overrideEnd", overrideEndTime);
+    preferences.putString("activePeriod", activePeriod);
+    
+    // Save each day's schedule
+    for (int day = 0; day < 7; day++) {
+        String dayPrefix = "day" + String(day) + "_";
+        
+        preferences.putBool((dayPrefix + "enabled").c_str(), weekSchedule[day].enabled);
+        
+        // Day period
+        preferences.putInt((dayPrefix + "d_hour").c_str(), weekSchedule[day].day.hour);
+        preferences.putInt((dayPrefix + "d_min").c_str(), weekSchedule[day].day.minute);
+        preferences.putFloat((dayPrefix + "d_heat").c_str(), weekSchedule[day].day.heatTemp);
+        preferences.putFloat((dayPrefix + "d_cool").c_str(), weekSchedule[day].day.coolTemp);
+        preferences.putFloat((dayPrefix + "d_auto").c_str(), weekSchedule[day].day.autoTemp);
+        preferences.putBool((dayPrefix + "d_active").c_str(), weekSchedule[day].day.active);
+        
+        // Night period
+        preferences.putInt((dayPrefix + "n_hour").c_str(), weekSchedule[day].night.hour);
+        preferences.putInt((dayPrefix + "n_min").c_str(), weekSchedule[day].night.minute);
+        preferences.putFloat((dayPrefix + "n_heat").c_str(), weekSchedule[day].night.heatTemp);
+        preferences.putFloat((dayPrefix + "n_cool").c_str(), weekSchedule[day].night.coolTemp);
+        preferences.putFloat((dayPrefix + "n_auto").c_str(), weekSchedule[day].night.autoTemp);
+        preferences.putBool((dayPrefix + "n_active").c_str(), weekSchedule[day].night.active);
+    }
+    
+    Serial.println("SCHEDULE: Settings saved to preferences");
+}
+
+// Load schedule settings from preferences
+void loadScheduleSettings() {
+    scheduleEnabled = preferences.getBool("schedEnabled", false);
+    scheduleOverride = preferences.getBool("schedOverride", false);
+    overrideEndTime = preferences.getULong("overrideEnd", 0);
+    activePeriod = preferences.getString("activePeriod", "manual");
+    
+    // Load each day's schedule with defaults
+    for (int day = 0; day < 7; day++) {
+        String dayPrefix = "day" + String(day) + "_";
+        
+        weekSchedule[day].enabled = preferences.getBool((dayPrefix + "enabled").c_str(), true);
+        
+        // Day period defaults (6:00 AM, 72°F heat, 76°F cool)
+        weekSchedule[day].day.hour = preferences.getInt((dayPrefix + "d_hour").c_str(), 6);
+        weekSchedule[day].day.minute = preferences.getInt((dayPrefix + "d_min").c_str(), 0);
+        weekSchedule[day].day.heatTemp = preferences.getFloat((dayPrefix + "d_heat").c_str(), 72.0);
+        weekSchedule[day].day.coolTemp = preferences.getFloat((dayPrefix + "d_cool").c_str(), 76.0);
+        weekSchedule[day].day.autoTemp = preferences.getFloat((dayPrefix + "d_auto").c_str(), 74.0);
+        weekSchedule[day].day.active = preferences.getBool((dayPrefix + "d_active").c_str(), true);
+        
+        // Night period defaults (10:00 PM, 68°F heat, 78°F cool)
+        weekSchedule[day].night.hour = preferences.getInt((dayPrefix + "n_hour").c_str(), 22);
+        weekSchedule[day].night.minute = preferences.getInt((dayPrefix + "n_min").c_str(), 0);
+        weekSchedule[day].night.heatTemp = preferences.getFloat((dayPrefix + "n_heat").c_str(), 68.0);
+        weekSchedule[day].night.coolTemp = preferences.getFloat((dayPrefix + "n_cool").c_str(), 78.0);
+        weekSchedule[day].night.autoTemp = preferences.getFloat((dayPrefix + "n_auto").c_str(), 73.0);
+        weekSchedule[day].night.active = preferences.getBool((dayPrefix + "n_active").c_str(), true);
+    }
+    
+    Serial.printf("SCHEDULE: Settings loaded - Enabled: %s, Override: %s, Active Period: %s\n",
+                  scheduleEnabled ? "YES" : "NO", 
+                  scheduleOverride ? "YES" : "NO",
+                  activePeriod.c_str());
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -455,6 +673,7 @@ void setup()
     // Initialize Preferences
     preferences.begin("thermostat", false);
     loadSettings();
+    loadScheduleSettings();
 
     // Initialize the DHT11 sensor
     // Initialize TFT backlight with PWM (GPIO 14)
@@ -667,6 +886,7 @@ void loop()
     static unsigned long lastSensorReadTime = 0;
     static unsigned long lastFanScheduleTime = 0;
     static unsigned long lastMQTTDataTime = 0;
+    static unsigned long lastScheduleCheckTime = 0;
     const unsigned long displayUpdateInterval = 30000; // Update display every 30 seconds for maximum touch responsiveness
     const unsigned long sensorReadInterval = 2000;    // Read sensors every 2 seconds
 
@@ -755,11 +975,23 @@ void loop()
         lastFanScheduleTime = currentTime;
     }
 
+    // Check temperature schedule - only check every 60 seconds
+    if (currentTime - lastScheduleCheckTime > 60000) {
+        checkSchedule();
+        lastScheduleCheckTime = currentTime;
+    }
+
     // Update display brightness based on light sensor - check every 1 second
     updateDisplayBrightness();
 
     // Check if display should go to sleep due to inactivity
     checkDisplaySleep();
+
+    // Check schedule every 30 seconds
+    if (currentTime - lastScheduleCheckTime > 30000) {
+        checkSchedule();
+        lastScheduleCheckTime = currentTime;
+    }
 
     // Periodic display updates disabled for maximum touch responsiveness
     // Display updates still happen on button presses for immediate feedback
@@ -1701,6 +1933,18 @@ void sendMQTTData()
             }
         }
 
+        // Publish schedule status
+        String scheduleEnabledTopic = hostname + "/schedule_enabled";
+        mqttClient.publish(scheduleEnabledTopic.c_str(), scheduleEnabled ? "on" : "off", true);
+        
+        String activePeriodTopic = hostname + "/active_period";
+        mqttClient.publish(activePeriodTopic.c_str(), activePeriod.c_str(), false);
+        
+        if (scheduleOverride) {
+            String overrideTopic = hostname + "/schedule_override";
+            mqttClient.publish(overrideTopic.c_str(), "active", false);
+        }
+
         // Publish availability
         String availabilityTopic = hostname + "/availability";
         mqttClient.publish(availabilityTopic.c_str(), "online", true);
@@ -2169,7 +2413,9 @@ void handleWebRequests()
                                        use24HourClock, mqttEnabled, mqttServer,
                                        mqttPort, mqttUsername, mqttPassword,
                                        tempOffset, humidityOffset, currentBrightness,
-                                       displaySleepEnabled, displaySleepTimeout);
+                                       displaySleepEnabled, displaySleepTimeout,
+                                       weekSchedule, scheduleEnabled, activePeriod,
+                                       scheduleOverride);
         request->send(200, "text/html", html);
     });
 
@@ -2524,6 +2770,120 @@ void handleWebRequests()
             }
         }
     });
+
+    // Schedule management route (schedule interface is now embedded in main page)
+
+    server.on("/schedule_set", HTTP_POST, [](AsyncWebServerRequest *request)
+    {
+        bool settingsChanged = false;
+        
+        // Master enable/disable
+        if (request->hasParam("scheduleEnabled", true)) {
+            bool newEnabled = request->getParam("scheduleEnabled", true)->value() == "on";
+            if (newEnabled != scheduleEnabled) {
+                scheduleEnabled = newEnabled;
+                settingsChanged = true;
+                if (!scheduleEnabled) {
+                    activePeriod = "manual";
+                    scheduleOverride = false;
+                    overrideEndTime = 0;
+                }
+            }
+        } else {
+            if (scheduleEnabled) {
+                scheduleEnabled = false;
+                activePeriod = "manual";
+                scheduleOverride = false;
+                overrideEndTime = 0;
+                settingsChanged = true;
+            }
+        }
+        
+        // Schedule override control
+        if (request->hasParam("scheduleOverride", true)) {
+            String action = request->getParam("scheduleOverride", true)->value();
+            if (action == "temporary") {
+                scheduleOverride = true;
+                overrideEndTime = millis() + (2 * 60 * 60 * 1000); // 2 hours
+                settingsChanged = true;
+            } else if (action == "permanent") {
+                scheduleOverride = true;
+                overrideEndTime = 0; // Permanent until manually disabled
+                settingsChanged = true;
+            } else if (action == "resume") {
+                scheduleOverride = false;
+                overrideEndTime = 0;
+                settingsChanged = true;
+            }
+        }
+        
+        // Process schedule updates for each day
+        for (int day = 0; day < 7; day++) {
+            String dayPrefix = "day" + String(day) + "_";
+            
+            // Day enabled
+            if (request->hasParam((dayPrefix + "enabled").c_str(), true)) {
+                weekSchedule[day].enabled = request->getParam((dayPrefix + "enabled").c_str(), true)->value() == "on";
+                settingsChanged = true;
+            } else if (weekSchedule[day].enabled) {
+                weekSchedule[day].enabled = false;
+                settingsChanged = true;
+            }
+            
+            // Day period - parse time from time input
+            if (request->hasParam((dayPrefix + "day_time").c_str(), true)) {
+                String timeStr = request->getParam((dayPrefix + "day_time").c_str(), true)->value();
+                int colonPos = timeStr.indexOf(':');
+                if (colonPos > 0) {
+                    weekSchedule[day].day.hour = timeStr.substring(0, colonPos).toInt();
+                    weekSchedule[day].day.minute = timeStr.substring(colonPos + 1).toInt();
+                    settingsChanged = true;
+                }
+            }
+            if (request->hasParam((dayPrefix + "day_heat").c_str(), true)) {
+                weekSchedule[day].day.heatTemp = request->getParam((dayPrefix + "day_heat").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+            if (request->hasParam((dayPrefix + "day_cool").c_str(), true)) {
+                weekSchedule[day].day.coolTemp = request->getParam((dayPrefix + "day_cool").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+            if (request->hasParam((dayPrefix + "day_auto").c_str(), true)) {
+                weekSchedule[day].day.autoTemp = request->getParam((dayPrefix + "day_auto").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+            
+            // Night period - parse time from time input
+            if (request->hasParam((dayPrefix + "night_time").c_str(), true)) {
+                String timeStr = request->getParam((dayPrefix + "night_time").c_str(), true)->value();
+                int colonPos = timeStr.indexOf(':');
+                if (colonPos > 0) {
+                    weekSchedule[day].night.hour = timeStr.substring(0, colonPos).toInt();
+                    weekSchedule[day].night.minute = timeStr.substring(colonPos + 1).toInt();
+                    settingsChanged = true;
+                }
+            }
+            if (request->hasParam((dayPrefix + "night_heat").c_str(), true)) {
+                weekSchedule[day].night.heatTemp = request->getParam((dayPrefix + "night_heat").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+            if (request->hasParam((dayPrefix + "night_cool").c_str(), true)) {
+                weekSchedule[day].night.coolTemp = request->getParam((dayPrefix + "night_cool").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+            if (request->hasParam((dayPrefix + "night_auto").c_str(), true)) {
+                weekSchedule[day].night.autoTemp = request->getParam((dayPrefix + "night_auto").c_str(), true)->value().toFloat();
+                settingsChanged = true;
+            }
+        }
+        
+        if (settingsChanged) {
+            saveScheduleSettings();
+            Serial.println("SCHEDULE: Settings updated via web interface");
+        }
+        
+        request->send(200, "text/plain", "Schedule settings updated!");
+    });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
@@ -2789,6 +3149,12 @@ void saveSettings()
     preferences.putULong("dispTimeout", displaySleepTimeout);
     
     saveWiFiSettings();
+    
+    // Save schedule settings if flag is set
+    if (scheduleUpdatedFlag) {
+        saveScheduleSettings();
+        scheduleUpdatedFlag = false;
+    }
 
     // Debug print to confirm settings are saved
     Serial.print("Settings saved.");

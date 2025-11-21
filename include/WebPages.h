@@ -3,6 +3,22 @@
 
 #include "WebInterface.h"
 
+// Schedule system structures
+struct SchedulePeriod {
+    int hour;        // 0-23
+    int minute;      // 0-59
+    float heatTemp;  // Target heating temperature
+    float coolTemp;  // Target cooling temperature
+    float autoTemp;  // Target auto mode temperature
+    bool active;     // Whether this period is enabled
+};
+
+struct DaySchedule {
+    SchedulePeriod day;    // Day period (default 6:00 AM)
+    SchedulePeriod night;  // Night period (default 10:00 PM)
+    bool enabled;          // Whether scheduling is enabled for this day
+};
+
 // Generate modern status page HTML
 String generateStatusPage(float currentTemp, float currentHumidity, float hydronicTemp, 
                          String thermostatMode, String fanMode, String version_info, 
@@ -20,7 +36,10 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
                          bool use24HourClock, bool mqttEnabled, String mqttServer,
                          int mqttPort, String mqttUsername, String mqttPassword,
                          float tempOffset, float humidityOffset, int currentBrightness,
-                         bool displaySleepEnabled, unsigned long displaySleepTimeout) {
+                         bool displaySleepEnabled, unsigned long displaySleepTimeout,
+                         // Schedule variables for embedded schedule tab
+                         DaySchedule weekSchedule[7], bool scheduleEnabled, String activePeriod,
+                         bool scheduleOverride) {
     
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
@@ -41,6 +60,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "<div class='nav-tabs'>";
     html += "<button class='nav-tab active' onclick='showTab(\"status\")'>Status</button>";
     html += "<button class='nav-tab' onclick='showTab(\"settings\")'>Settings</button>";
+    html += "<button class='nav-tab' onclick='showTab(\"schedule\")'>Schedule</button>";
     html += "<button class='nav-tab' onclick='showTab(\"system\")'>System</button>";
     html += "</div>";
     
@@ -396,6 +416,172 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     
     html += "</form>";
     html += "</div>"; // End settings-content tab
+    
+    // Schedule tab content (embedded schedule interface)
+    html += "<div id='schedule-content' class='tab-content content'>";
+    html += "<form action='/schedule_set' method='POST'>";
+    
+    // Master schedule control section
+    html += "<div class='settings-section'>";
+    html += "<h3>";
+    html += ICON_CLOCK;
+    html += " Schedule Control</h3>";
+    
+    html += "<div class='control-group'>";
+    html += "<label class='toggle-switch'>";
+    html += "<input type='checkbox' name='scheduleEnabled'";
+    if (scheduleEnabled) html += " checked";
+    html += ">";
+    html += "<span class='toggle-slider'></span>";
+    html += "</label>";
+    html += "<span class='control-label'>Enable 7-Day Schedule</span>";
+    html += "</div>";
+    
+    // Schedule override controls (always visible)
+    html += "<div class='control-group'>";
+    html += "<label for='scheduleOverride'>Schedule Override:</label>";
+    html += "<select name='scheduleOverride' class='form-select'>";
+    html += "<option value='resume'";
+    if (!scheduleOverride) html += " selected";
+    html += ">Follow Schedule</option>";
+    html += "<option value='temporary'";
+    if (scheduleOverride) html += " selected";
+    html += ">Override for 2 Hours</option>";
+    html += "<option value='permanent'>Override Until Resumed</option>";
+    html += "</select>";
+    html += "</div>";
+    
+    // Current status display
+    html += "<div style='padding: 12px; background: #f5f5f5; border-radius: 8px; margin: 16px 0;'>";
+    html += "<p><strong>Current Status:</strong> ";
+    if (scheduleEnabled) {
+        html += "Schedule Active - " + activePeriod;
+        if (scheduleOverride) html += " (Override Active)";
+    } else {
+        html += "Schedule Disabled";
+    }
+    html += "</p>";
+    html += "</div>";
+    
+    html += "</div>"; // End schedule control section
+    
+    // Weekly schedule table (always visible)
+    html += "<div class='settings-section'>";
+    html += "<h3>";
+    html += ICON_CALENDAR;
+    html += " Weekly Schedule</h3>";
+    html += "<p>Configure day and night temperatures for each day of the week.</p>";
+    
+    // Schedule table
+    html += "<div class='schedule-table'>";
+    html += "<div class='schedule-row schedule-header'>";
+    html += "<div class='schedule-cell'>Day</div>";
+    html += "<div class='schedule-cell'>Enable</div>";
+    html += "<div class='schedule-cell'>Day Period</div>";
+    html += "<div class='schedule-cell'>Day Temps</div>";
+    html += "<div class='schedule-cell'>Night Period</div>";
+    html += "<div class='schedule-cell'>Night Temps</div>";
+    html += "</div>";
+    
+    String dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    
+    for (int day = 0; day < 7; day++) {
+        String dayPrefix = "day" + String(day) + "_";
+        DaySchedule& schedule = weekSchedule[day];
+        
+        html += "<div class='schedule-row'>";
+        
+        // Day name
+        html += "<div class='schedule-cell'><strong>" + dayNames[day] + "</strong></div>";
+        
+        // Enable checkbox
+        html += "<div class='schedule-cell'>";
+        html += "<label class='toggle-switch small'>";
+        html += "<input type='checkbox' name='" + dayPrefix + "enabled'";
+        if (schedule.enabled) html += " checked";
+        html += ">";
+        html += "<span class='toggle-slider'></span>";
+        html += "</label>";
+        html += "</div>";
+        
+        // Day period time
+        html += "<div class='schedule-cell'>";
+        html += "<input type='time' name='" + dayPrefix + "day_time' value='";
+        html += String(schedule.day.hour < 10 ? "0" : "") + String(schedule.day.hour) + ":";
+        html += String(schedule.day.minute < 10 ? "0" : "") + String(schedule.day.minute);
+        html += "' class='form-input time-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "</div>";
+        
+        // Day temps
+        html += "<div class='schedule-cell'>";
+        html += "<div class='temp-inputs'>";
+        html += "<label class='temp-label'>Heat:</label>";
+        html += "<input type='number' name='" + dayPrefix + "day_heat' value='" + String(schedule.day.heatTemp, 1);
+        html += "' step='0.5' min='40' max='90' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "<label class='temp-label'>Cool:</label>";
+        html += "<input type='number' name='" + dayPrefix + "day_cool' value='" + String(schedule.day.coolTemp, 1);
+        html += "' step='0.5' min='50' max='95' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "<label class='temp-label'>Auto:</label>";
+        html += "<input type='number' name='" + dayPrefix + "day_auto' value='" + String(schedule.day.autoTemp, 1);
+        html += "' step='0.5' min='45' max='90' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "</div>";
+        html += "</div>";
+        
+        // Night period time
+        html += "<div class='schedule-cell'>";
+        html += "<input type='time' name='" + dayPrefix + "night_time' value='";
+        html += String(schedule.night.hour < 10 ? "0" : "") + String(schedule.night.hour) + ":";
+        html += String(schedule.night.minute < 10 ? "0" : "") + String(schedule.night.minute);
+        html += "' class='form-input time-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "</div>";
+        
+        // Night temps
+        html += "<div class='schedule-cell'>";
+        html += "<div class='temp-inputs'>";
+        html += "<label class='temp-label'>Heat:</label>";
+        html += "<input type='number' name='" + dayPrefix + "night_heat' value='" + String(schedule.night.heatTemp, 1);
+        html += "' step='0.5' min='40' max='90' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "<label class='temp-label'>Cool:</label>";
+        html += "<input type='number' name='" + dayPrefix + "night_cool' value='" + String(schedule.night.coolTemp, 1);
+        html += "' step='0.5' min='50' max='95' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "<label class='temp-label'>Auto:</label>";
+        html += "<input type='number' name='" + dayPrefix + "night_auto' value='" + String(schedule.night.autoTemp, 1);
+        html += "' step='0.5' min='45' max='90' class='form-input temp-input'";
+        if (!schedule.enabled) html += " disabled";
+        html += ">";
+        html += "</div>";
+        html += "</div>";
+        
+        html += "</div>"; // End schedule row
+    }
+    
+    html += "</div>"; // End schedule table
+    html += "</div>"; // End weekly schedule section
+    
+    // Schedule actions
+    html += "<div class='settings-section'>";
+    html += "<h3>Schedule Actions</h3>";
+    html += "<div class='button-group'>";
+    html += "<input type='submit' value='Save Schedule Settings' class='btn btn-primary'>";
+    html += "</div>";
+    html += "</div>";
+    
+    html += "</form>";
+    html += "</div>"; // End schedule-content tab
     
     // System tab content
     html += "<div id='system-content' class='tab-content content'>";
@@ -845,6 +1031,203 @@ String generateFactoryResetPage() {
     
     html += "</div>"; // End content
     html += "</div>"; // End container
+    
+    html += "</body></html>";
+    
+    return html;
+}
+
+// Generate schedule management page HTML
+String generateSchedulePage(DaySchedule weekSchedule[7], bool scheduleEnabled, String activePeriod,
+                           bool scheduleOverride, bool use24HourClock) {
+    String html = "<!DOCTYPE html><html lang='en'><head>";
+    html += "<meta charset='UTF-8'>";
+    html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    html += "<title>Smart Thermostat - Schedule</title>";
+    html += CSS_STYLES;
+    html += "</head><body>";
+    
+    html += "<div class='container'>";
+    
+    // Header
+    html += "<div class='header'>";
+    html += "<h1>7-Day Temperature Schedule</h1>";
+    html += "<div class='version'>Active Period: " + activePeriod;
+    if (scheduleOverride) html += " (Override Active)";
+    html += "</div>";
+    html += "</div>";
+    
+    // Navigation back
+    html += "<div style='margin-bottom: 20px;'>";
+    html += "<a href='/' class='btn btn-secondary'>";
+    html += ICON_BACK;
+    html += " Back to Status</a>";
+    html += "</div>";
+    
+    html += "<form action='/schedule_set' method='POST'>";
+    
+    // Master schedule control
+    html += "<div class='settings-section'>";
+    html += "<h3>";
+    html += ICON_CLOCK;
+    html += " Schedule Control</h3>";
+    
+    html += "<div class='control-group'>";
+    html += "<label class='toggle-switch'>";
+    html += "<input type='checkbox' name='scheduleEnabled'";
+    if (scheduleEnabled) html += " checked";
+    html += ">";
+    html += "<span class='toggle-slider'></span>";
+    html += "</label>";
+    html += "<span class='control-label'>Enable 7-Day Schedule</span>";
+    html += "</div>";
+    
+    // Override controls
+    if (scheduleEnabled) {
+        html += "<div class='control-group'>";
+        html += "<label for='scheduleOverride'>Schedule Override:</label>";
+        html += "<select name='scheduleOverride' class='form-control'>";
+        html += "<option value='resume'";
+        if (!scheduleOverride) html += " selected";
+        html += ">Follow Schedule</option>";
+        html += "<option value='temporary'";
+        if (scheduleOverride) html += " selected";
+        html += ">Override for 2 Hours</option>";
+        html += "<option value='permanent'>Override Until Resumed</option>";
+        html += "</select>";
+        html += "</div>";
+    }
+    
+    html += "</div>";
+    
+    // Schedule table
+    if (scheduleEnabled) {
+        html += "<div class='settings-section'>";
+        html += "<h3>";
+        html += ICON_CALENDAR;
+        html += " Weekly Schedule</h3>";
+        html += "<p>Configure day and night temperatures for each day of the week.</p>";
+        
+        // Table header
+        html += "<div class='schedule-table'>";
+        html += "<div class='schedule-row schedule-header'>";
+        html += "<div class='schedule-cell'>Day</div>";
+        html += "<div class='schedule-cell'>Enable</div>";
+        html += "<div class='schedule-cell'>Day Period</div>";
+        html += "<div class='schedule-cell'>Day Temps (H/C/A)</div>";
+        html += "<div class='schedule-cell'>Night Period</div>";
+        html += "<div class='schedule-cell'>Night Temps (H/C/A)</div>";
+        html += "</div>";
+        
+        String dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        
+        for (int day = 0; day < 7; day++) {
+            String dayPrefix = "day" + String(day) + "_";
+            DaySchedule& schedule = weekSchedule[day];
+            
+            html += "<div class='schedule-row'>";
+            
+            // Day name
+            html += "<div class='schedule-cell'><strong>" + dayNames[day] + "</strong></div>";
+            
+            // Enable checkbox
+            html += "<div class='schedule-cell'>";
+            html += "<label class='toggle-switch small'>";
+            html += "<input type='checkbox' name='" + dayPrefix + "enabled'";
+            if (schedule.enabled) html += " checked";
+            html += ">";
+            html += "<span class='toggle-slider'></span>";
+            html += "</label>";
+            html += "</div>";
+            
+            // Day period time
+            html += "<div class='schedule-cell'>";
+            html += "<div class='time-input'>";
+            html += "<input type='number' name='" + dayPrefix + "d_hour' min='0' max='23' value='" + String(schedule.day.hour) + "' class='time-field'>";
+            html += "<span>:</span>";
+            html += "<input type='number' name='" + dayPrefix + "d_min' min='0' max='59' value='" + String(schedule.day.minute) + "' class='time-field'>";
+            html += "</div>";
+            html += "<label class='checkbox-small'>";
+            html += "<input type='checkbox' name='" + dayPrefix + "d_active'";
+            if (schedule.day.active) html += " checked";
+            html += "> Active";
+            html += "</label>";
+            html += "</div>";
+            
+            // Day period temperatures
+            html += "<div class='schedule-cell'>";
+            html += "<div class='temp-input'>";
+            html += "<label>Heat:</label>";
+            html += "<input type='number' name='" + dayPrefix + "d_heat' min='50' max='95' step='0.5' value='" + String(schedule.day.heatTemp, 1) + "' class='temp-field'>";
+            html += "<label>Cool:</label>";
+            html += "<input type='number' name='" + dayPrefix + "d_cool' min='50' max='95' step='0.5' value='" + String(schedule.day.coolTemp, 1) + "' class='temp-field'>";
+            html += "</div>";
+            html += "</div>";
+            
+            // Night period time
+            html += "<div class='schedule-cell'>";
+            html += "<div class='time-input'>";
+            html += "<input type='number' name='" + dayPrefix + "n_hour' min='0' max='23' value='" + String(schedule.night.hour) + "' class='time-field'>";
+            html += "<span>:</span>";
+            html += "<input type='number' name='" + dayPrefix + "n_min' min='0' max='59' value='" + String(schedule.night.minute) + "' class='time-field'>";
+            html += "</div>";
+            html += "<label class='checkbox-small'>";
+            html += "<input type='checkbox' name='" + dayPrefix + "n_active'";
+            if (schedule.night.active) html += " checked";
+            html += "> Active";
+            html += "</label>";
+            html += "</div>";
+            
+            // Night period temperatures
+            html += "<div class='schedule-cell'>";
+            html += "<div class='temp-input'>";
+            html += "<label>Heat:</label>";
+            html += "<input type='number' name='" + dayPrefix + "n_heat' min='50' max='95' step='0.5' value='" + String(schedule.night.heatTemp, 1) + "' class='temp-field'>";
+            html += "<label>Cool:</label>";
+            html += "<input type='number' name='" + dayPrefix + "n_cool' min='50' max='95' step='0.5' value='" + String(schedule.night.coolTemp, 1) + "' class='temp-field'>";
+            html += "</div>";
+            html += "</div>";
+            
+            html += "</div>"; // End schedule row
+        }
+        
+        html += "</div>"; // End schedule table
+        html += "</div>"; // End settings section
+    }
+    
+    // Save button
+    html += "<div class='button-group'>";
+    html += "<button type='submit' class='btn btn-primary'>";
+    html += ICON_SAVE;
+    html += " Save Schedule</button>";
+    html += "<a href='/' class='btn btn-secondary'>Cancel</a>";
+    html += "</div>";
+    
+    html += "</form>";
+    html += "</div>"; // End container
+    
+    // Add custom CSS for schedule table
+    html += "<style>";
+    html += ".schedule-table { display: table; width: 100%; border-collapse: collapse; margin: 16px 0; }";
+    html += ".schedule-row { display: table-row; }";
+    html += ".schedule-cell { display: table-cell; padding: 12px 8px; border: 1px solid #333; vertical-align: middle; }";
+    html += ".schedule-header { background: #2c2c2c; font-weight: bold; }";
+    html += ".schedule-row:nth-child(even) { background: rgba(255,255,255,0.05); }";
+    html += ".time-input { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }";
+    html += ".time-field { width: 45px; padding: 4px; background: #2c2c2c; border: 1px solid #555; color: white; text-align: center; }";
+    html += ".temp-input { display: flex; flex-direction: column; gap: 4px; }";
+    html += ".temp-input label { font-size: 12px; color: #ccc; }";
+    html += ".temp-field { width: 60px; padding: 4px; background: #2c2c2c; border: 1px solid #555; color: white; }";
+    html += ".toggle-switch.small { transform: scale(0.8); }";
+    html += ".checkbox-small { font-size: 12px; display: flex; align-items: center; gap: 4px; }";
+    html += ".checkbox-small input { margin: 0; }";
+    html += "@media (max-width: 768px) {";
+    html += "  .schedule-table, .schedule-row, .schedule-cell { display: block; }";
+    html += "  .schedule-cell { border: none; border-bottom: 1px solid #333; padding: 8px 0; }";
+    html += "  .schedule-header { display: none; }";
+    html += "  .schedule-cell:before { content: attr(data-label) ': '; font-weight: bold; }";
+    html += "}";
+    html += "</style>";
     
     html += "</body></html>";
     

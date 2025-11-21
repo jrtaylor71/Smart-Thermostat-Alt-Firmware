@@ -4,22 +4,24 @@
 
 The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32-S3 platform with professional PCB design. This alternative firmware for Stefan Meisner's smart-thermostat hardware provides enhanced features including dual-core architecture, centralized display management, and advanced multi-stage HVAC control.
 
-**Current Version**: 1.0.8 (November 2025)
+**Current Version**: 1.1.0 (November 2025)
 **Hardware**: ESP32-S3-WROOM-1-N16 (16MB Flash)
 **Architecture**: Dual-core FreeRTOS with Option C display management
-**Status**: Production-ready with comprehensive testing
+**Status**: Production-ready with comprehensive testing and scheduling
 
 ### Key Features
 
 - **Professional Dual-Core Architecture**: ESP32-S3 FreeRTOS with Core 0 for UI/networking, Core 1 for control
+- **7-Day Scheduling System**: Complete inline scheduling with day/night periods, editable Heat/Cool/Auto temperatures, and MQTT integration
+- **Modern Tabbed Web Interface**: All features embedded in main page - no separate pages, always-visible options
 - **Local Touch Control**: ILI9341 TFT LCD with resistive touch and adaptive brightness
-- **Smart Home Integration**: Full MQTT support with Home Assistant auto-discovery and precision temperature control
+- **Smart Home Integration**: Full MQTT support with Home Assistant auto-discovery, precision temperature control, and schedule status publishing
 - **Advanced Sensor Suite**: AHT20 I2C sensor for ambient conditions, DS18B20 OneWire for hydronic systems
 - **Intelligent Multi-Stage HVAC**: 2-stage heating/cooling with hybrid time/temperature staging logic
-- **Hydronic Heating Support**: Water temperature monitoring with safety interlocks
+- **Enhanced Hydronic Safety**: Water temperature monitoring with [LOCKOUT] safety interlocks and improved alerts
 - **Flexible Operation Modes**: Heat, Cool, Auto, and Off with configurable temperature swings
 - **Advanced Fan Control**: Auto, On, and Cycle modes with scheduled operation (minutes per hour)
-- **Comprehensive Web Interface**: Real-time monitoring and complete configuration
+- **Comprehensive Web Interface**: Real-time monitoring and complete configuration in tabbed layout
 - **Robust Offline Operation**: Full functionality without WiFi connection
 - **Custom PCB Design**: Professional PCB by Stefan Meisner for clean installation
 - **Modern UI**: Material Design color scheme with responsive touch interface
@@ -158,14 +160,17 @@ const int buzzerPin = 17;       // Buzzer (5V through 2N7002 MOSFET)
 
 ## Web Interface
 
-### Status Page (/)
+### Tabbed Interface Design
+Modern single-page application with embedded tabs:
+
+#### Status Tab
 - Real-time temperature and humidity display
-- Current relay states
-- Thermostat and fan mode status
+- Current relay states and system status
+- Thermostat and fan mode indicators
 - Hydronic temperature (if enabled)
 - Auto-refresh every 10 seconds
 
-### Settings Page (/settings)
+#### Settings Tab
 Comprehensive configuration including:
 - Temperature setpoints for all modes
 - Temperature swing settings
@@ -176,11 +181,75 @@ Comprehensive configuration including:
 - Time zone and clock format
 - Fan scheduling parameters
 
-### Additional Endpoints
+#### Schedule Tab (New in v1.1.0)
+Complete 7-day scheduling system:
+- **Weekly Schedule Table**: 7 days with day/night periods
+- **Editable Temperatures**: Independent Heat, Cool, and Auto temperatures for each period
+- **Time Controls**: Set day and night period start times
+- **Per-Day Enable**: Individual day enable/disable toggles
+- **Master Controls**: Schedule enable/disable and override options
+- **Real-Time Status**: Current schedule state and active period display
+- **Always Visible**: All options permanently displayed - no hidden menus
+- **MQTT Integration**: Schedule status published to Home Assistant
+- **Persistent Storage**: All schedule settings saved to preferences
+
+#### System Tab
+- Device information and system status
+- Firmware version and hardware details
+- OTA firmware update interface
+- System restart controls
+
+### API Endpoints
+- `/`: Main interface with embedded tabs
+- `/schedule_set`: Schedule configuration processing (POST)
 - `/status`: JSON API for current status
 - `/control`: JSON API for remote control
 - `/update`: OTA firmware update interface
 - `/reboot`: System restart endpoint
+
+## 7-Day Scheduling System
+
+### Schedule Structure
+```cpp
+struct SchedulePeriod {
+    int hour;        // 0-23
+    int minute;      // 0-59
+    float heatTemp;  // Target heating temperature
+    float coolTemp;  // Target cooling temperature
+    float autoTemp;  // Target auto mode temperature
+    bool active;     // Whether this period is enabled
+};
+
+struct DaySchedule {
+    SchedulePeriod day;    // Day period (default 6:00 AM)
+    SchedulePeriod night;  // Night period (default 10:00 PM)
+    bool enabled;          // Whether scheduling is enabled for this day
+};
+```
+
+### Schedule Features
+- **7-Day Configuration**: Individual schedules for each day of the week
+- **Day/Night Periods**: Two periods per day with independent temperature settings
+- **Three Temperature Modes**: Separate Heat, Cool, and Auto temperatures for each period
+- **Flexible Timing**: User-configurable start times for day and night periods
+- **Override System**: Temporary (2-hour) or permanent override capabilities
+- **MQTT Integration**: Schedule status and changes published to Home Assistant
+- **Persistent Storage**: All settings saved to ESP32 preferences
+- **Real-Time Application**: Schedule automatically applied based on current time
+
+### Schedule Operation
+1. **Time Check**: System checks current time every 30 seconds
+2. **Period Detection**: Determines if current time is in day or night period
+3. **Temperature Application**: Applies scheduled temperatures to thermostat setpoints
+4. **MQTT Updates**: Publishes schedule status and active period
+5. **Override Handling**: Manages temporary and permanent overrides
+6. **Home Assistant Integration**: Schedule entities available in HA
+
+### Default Schedule
+- **Day Period**: 6:00 AM - Heat: 72°F, Cool: 76°F, Auto: 74°F
+- **Night Period**: 10:00 PM - Heat: 68°F, Cool: 78°F, Auto: 73°F
+- **All Days Enabled**: Default schedule active for all 7 days
+- **Master Schedule**: Disabled by default (manual operation)
 
 ## MQTT Integration
 
@@ -204,6 +273,18 @@ Automatically configures Home Assistant with:
 - `esp32_thermostat/mode`: Current thermostat mode
 - `esp32_thermostat/fan_mode`: Current fan mode
 - `esp32_thermostat/availability`: Online/offline status
+
+#### Schedule Topics (New in v1.1.0)
+- `<hostname>/schedule_enabled`: Schedule master enable/disable status
+- `<hostname>/active_period`: Current active period ("day", "night", "manual")
+- `<hostname>/schedule_override`: Schedule override status
+- Alert topics with improved hysteresis and non-retained delivery
+
+#### Home Assistant Auto-Discovery
+- Automatic climate entity creation with full thermostat control
+- Schedule status sensors for monitoring active periods
+- Temperature and humidity sensors with device information
+- All entities grouped under single thermostat device
 
 ## Touch Interface
 
@@ -407,7 +488,19 @@ Located in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
 
 ## Version History
 
-### Version 1.0.8 (Current - November 2025)
+### Version 1.1.0 (Current - November 2025)
+- **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs
+- **Enhanced Schedule Features**: Per-day enable/disable, time controls, override system, and MQTT integration
+- **MQTT Alert Improvements**: Non-retained alerts with hysteresis-based reset logic for better Home Assistant integration
+- **Hydronic Safety Enhancements**: [LOCKOUT] labels replacing [SAFETY] for clearer system status indication
+- **Schedule MQTT Integration**: Real-time schedule status publishing to Home Assistant with device grouping
+- **Persistent Schedule Storage**: All schedule settings saved to ESP32 preferences with automatic loading
+- **Auto Temperature Control**: Independent user-editable auto temperatures for each schedule period
+- **Inline Interface Design**: No separate pages - all functionality embedded in tabbed main interface
+- **Always-Visible Options**: All schedule controls permanently displayed without hidden menus
+
+### Version 1.0.8 (November 2025)
 - **ESP32-S3-WROOM-1-N16 Platform**: Optimized for 16MB flash with huge_app.csv partition
 - **Dual-Core FreeRTOS Architecture**: Core 0 for UI/network, Core 1 for sensors/control
 - **Option C Centralized Display Management**: Mutex-protected display updates with task coordination

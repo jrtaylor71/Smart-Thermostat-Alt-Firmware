@@ -18,7 +18,9 @@ Smart-Thermostat-Alt-Firmware/
 │   └── 📄 Main-Thermostat.cpp          # Main application source (3096 lines)
 │
 ├── 📁 include/                          # Header files directory
-│   └── 📄 TFT_Setup_ESP32_S3_Thermostat.h # TFT display configuration (legacy)
+│   ├── 📄 TFT_Setup_ESP32_S3_Thermostat.h # TFT display configuration (legacy)
+│   ├── 📄 WebInterface.h                # Modern web interface CSS, icons, and JavaScript
+│   └── 📄 WebPages.h                    # HTML page generation functions
 │
 ├── 📁 lib/                              # Custom library configurations
 │   └── 📁 TFT_eSPI_Setup/
@@ -80,24 +82,43 @@ Smart-Thermostat-Alt-Firmware/
 
 ### Source Code Architecture
 
-#### `src/Main-Thermostat.cpp` (3096 lines)
-- Single comprehensive source file containing complete thermostat implementation
+#### `src/Main-Thermostat.cpp` (3532 lines)
+- Single comprehensive source file containing complete thermostat implementation with 7-day scheduling
 - Organized into logical function groups with clear separation of concerns
-- **Version**: 1.0.8 with advanced ESP32-S3 dual-core architecture
+- **Version**: 1.1.0 with advanced ESP32-S3 dual-core architecture and scheduling system
 
 **Code Organization:**
 - **Lines 1-50**: Header, license, and hardware credits
 - **Lines 51-200**: Constants, pin definitions, and hardware configuration
-- **Lines 201-350**: Global variables, system state, and synchronization
-- **Lines 351-400**: Function prototypes organized by category
-- **Lines 401-600**: Setup and initialization functions
-- **Lines 601-800**: Main loop with non-blocking task scheduling
-- **Lines 801-950**: Dual-core FreeRTOS task functions
-- **Lines 951-1500**: Display management (Option C centralized approach)
-- **Lines 1501-2200**: HVAC control logic with multi-stage support
-- **Lines 2201-2800**: Communication systems (MQTT, WiFi, web server)
-- **Lines 2801-3000**: Settings management and persistence
-- **Lines 3001-3096**: Utility functions and hardware abstraction
+- **Lines 201-300**: Global variables, system state, and scheduling structures
+- **Lines 301-400**: Function prototypes organized by category (including schedule functions)
+- **Lines 401-650**: Setup, initialization, and schedule loading functions
+- **Lines 651-850**: Main loop with non-blocking task scheduling and schedule checking
+- **Lines 851-1000**: Dual-core FreeRTOS task functions
+- **Lines 1001-1600**: Display management (Option C centralized approach)
+- **Lines 1601-2300**: HVAC control logic with multi-stage support and schedule application
+- **Lines 2301-2900**: Communication systems (MQTT, WiFi, web server with schedule routes)
+- **Lines 2901-3200**: Settings management, schedule persistence, and preferences
+- **Lines 3201-3532**: Utility functions and hardware abstraction
+
+### Web Interface Architecture
+
+#### `include/WebInterface.h`
+- Modern Material Design CSS framework
+- SVG icon library for consistent UI elements
+- JavaScript for dynamic functionality and tab management
+- Responsive design supporting desktop and mobile devices
+- Auto-refresh capabilities for real-time status updates
+
+#### `include/WebPages.h`
+- HTML page generation functions using modern templates with tabbed interface
+- `generateStatusPage()`: Real-time system status with embedded Settings, Schedule, and System tabs
+- **Schedule Tab Integration**: Complete 7-day scheduling interface embedded in main page
+- **Schedule Data Structures**: `SchedulePeriod` and `DaySchedule` structs for comprehensive scheduling
+- `generateSettingsPage()`: Standalone comprehensive configuration interface (legacy)
+- `generateFactoryResetPage()`: System reset confirmation
+- `generateOTAPage()`: Over-the-air firmware update interface
+- Responsive design with always-visible schedule options and no hidden menus
 
 ### Configuration Files
 
@@ -182,7 +203,6 @@ build_flags =
 - **Additional Sensors**: Add support for more sensor types (BME280, SHT30)
 - **New Display Elements**: Extend UI with weather information, graphs
 - **Enhanced MQTT**: Add more Home Assistant entities and sensors
-- **Advanced Scheduling**: Implement time-based temperature schedules
 - **Data Logging**: Add historical data collection to SD card or cloud
 - **Energy Monitoring**: Track HVAC runtime and energy usage
 
@@ -226,18 +246,21 @@ build_flags =
 ## 📊 Current Project Status
 
 ### Version Information
-- **Firmware Version**: 1.0.8
+- **Firmware Version**: 1.1.0 (November 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
-- **Code Size**: 3096 lines of production-ready C++
-- **Flash Utilization**: 30.3% (plenty of room for expansion)
+- **Code Size**: 3532 lines of production-ready C++ with comprehensive scheduling system
+- **Flash Utilization**: 32.1% (plenty of room for expansion)
 
 ### Key Features Implemented
+- **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **Modern Tabbed Web Interface**: All features embedded in main page - no separate pages, always-visible options
 - **Dual-Core Architecture**: Core 0 (UI/Network), Core 1 (Sensors/Control)
-- **Material Design UI**: Modern, responsive touch interface
-- **Home Assistant Integration**: MQTT auto-discovery with comprehensive entities
-- **Multi-Stage HVAC**: Advanced heating/cooling with staging support
-- **Web Configuration**: Built-in web server for settings and monitoring
-- **Persistent Settings**: NVS storage with factory reset capability
-- **Safety Features**: Watchdog timers, relay protection, sensor validation
+- **Material Design UI**: Modern, responsive touch interface with scheduling integration
+- **Enhanced Home Assistant Integration**: MQTT auto-discovery with schedule status publishing and comprehensive entities
+- **Multi-Stage HVAC**: Advanced heating/cooling with staging support and schedule integration
+- **Schedule MQTT Integration**: Real-time schedule status and override control via MQTT
+- **Comprehensive Web Configuration**: Tabbed interface with Status, Settings, Schedule, and System tabs
+- **Persistent Schedule Storage**: All schedule settings saved to NVS with automatic loading
+- **Enhanced Safety Features**: Improved hydronic [LOCKOUT] system, watchdog timers, and sensor validation
 
 This project structure provides a robust foundation for both learning and extending the ESP32-S3 Smart Thermostat system. The single-file architecture maintains simplicity while the dual-core FreeRTOS implementation ensures professional-grade performance and reliability.

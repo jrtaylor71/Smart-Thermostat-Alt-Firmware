@@ -15,10 +15,11 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 
 - **📱 Local Touch Control**: ILI9341 TFT LCD with intuitive touch interface
 - **🏠 Smart Home Ready**: Full MQTT integration with Home Assistant auto-discovery
-- **🌡️ Dual Sensors**: DHT11 for ambient conditions + DS18B20 for hydronic systems
+- **📅 7-Day Scheduling**: Comprehensive inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **🌡️ Dual Sensors**: AHT20 for ambient conditions + DS18B20 for hydronic systems
 - **⚡ Multi-Stage HVAC**: Support for 2-stage heating and cooling systems
 - **💨 Advanced Fan Control**: Auto, continuous, and scheduled cycling modes
-- **🌐 Web Interface**: Complete web-based configuration and monitoring
+- **🌐 Modern Web Interface**: Complete tabbed interface with embedded scheduling - no separate pages
 - **📡 Offline Operation**: Full functionality without WiFi connection
 - **🔧 Professional PCB**: Custom PCB design for clean, permanent installation
 - **🔄 OTA Updates**: Over-the-air firmware updates
@@ -49,27 +50,33 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 
 Access the thermostat's web interface by navigating to its IP address:
 
-### Status Page
+### Tabbed Interface with Embedded Features
 ![Web Status](<img/Screenshot from 2025-11-20 18-39-53.png>)
 
-Real-time monitoring of:
+**Status Tab**: Real-time monitoring of:
 - Current temperature and humidity
 - Thermostat and fan modes
-- Relay states
-- System status
+- Relay states and system status
 
-### Settings Page
+**Settings Tab**: Complete configuration interface for:
 ![Web Settings](<img/Screenshot from 2025-11-20 18-40-24.png>)
 ![Web Settings2](<img/Screenshot from 2025-11-20 18-40-45.png>)
 ![Web Settings3](<img/Screenshot from 2025-11-20 18-41-20.png>)
-
-Complete configuration interface for:
 - Temperature setpoints and control modes
 - MQTT/Home Assistant integration
 - WiFi network settings
 - Multi-stage HVAC parameters
 - Hydronic heating controls
 - Fan scheduling options
+
+**Schedule Tab**: Comprehensive 7-day scheduling:
+- Day and night periods for each day of the week
+- Editable Heat, Cool, and Auto temperatures for each period
+- Time controls for period transitions
+- Schedule enable/disable and override controls
+- All options always visible - no hidden menus
+
+**System Tab**: Device information and firmware updates
 
 ## 🏠 Home Assistant Integration
 
@@ -134,14 +141,17 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.0.7
-- ESP32-S3-WROOM-1-N16 platform with 16MB flash optimization
+**Current Version**: 1.1.0 (November 2025)
+- **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs
+- **MQTT Alert Improvements**: Non-retained alerts with hysteresis-based reset logic
+- **Hydronic Safety Enhancements**: [LOCKOUT] labels and improved temperature monitoring
+- ESP32-S3-WROM-1-N16 platform with 16MB flash optimization
 - Modern Material Design color scheme with enhanced readability
 - Complete thermostat functionality with Option C display system
 - Enhanced MQTT/Home Assistant integration with temperature precision
 - Professional PCB design (hardware by Stefan Meisner)
 - Multi-stage HVAC support with intelligent staging
-- Web interface and OTA updates
 - Dual-core FreeRTOS architecture for ESP32-S3
 
 ## 🙏 Credits & Acknowledgments
