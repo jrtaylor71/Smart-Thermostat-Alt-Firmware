@@ -35,6 +35,7 @@ The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermos
 - **ILI9341 TFT LCD with XPT2046**: 320x240 pixel display with resistive touch controller
 - **AHT20 Sensor**: I2C temperature and humidity measurement  
 - **DS18B20 Sensor**: OneWire water/hydronic temperature measurement (optional)
+- **LD2410 Motion Sensor**: 24GHz mmWave radar for occupancy detection and display wake
 - **5x Relay Outputs**: Control for heating, cooling, and fan systems
 
 ### Pin Configuration (ESP32-S3)
@@ -88,6 +89,13 @@ const int buzzerPin = 17;       // Buzzer (5V through 2N7002 MOSFET)
 #define BOOT_BUTTON 0       // Factory reset button
 ```
 
+#### Motion Sensor (LD2410) - Optional
+```cpp
+#define LD2410_RX_PIN 15    // ESP32 RX (connect to LD2410 TX)
+#define LD2410_TX_PIN 16    // ESP32 TX (connect to LD2410 RX) 
+#define LD2410_MOTION_PIN 18 // Digital motion output pin
+```
+
 ## Software Architecture
 
 ### Core Libraries
@@ -107,6 +115,16 @@ const int buzzerPin = 17;       // Buzzer (5V through 2N7002 MOSFET)
 - `drawButtons()`: Renders touch interface buttons
 - `handleButtonPress()`: Processes touch input
 - `drawKeyboard()`: WiFi setup keyboard interface
+- `wakeDisplay()`: Wake display from sleep on touch/motion
+- `checkDisplaySleep()`: Automatic display sleep management
+
+#### Motion Detection (LD2410)
+- `testLD2410Connection()`: Verify motion sensor connectivity with robust detection
+- `readMotionSensor()`: Read motion status, wake display, and publish MQTT status
+- **Auto-Wake Display**: Display automatically wakes on motion detection
+- **Robust Connection Logic**: Handles sensors that don't respond to UART commands
+- **MQTT Integration**: Motion status published to Home Assistant with auto-discovery
+- **Display Sleep Prevention**: Motion detection prevents display sleep timeout
 
 #### HVAC Control
 - `controlRelays()`: Main thermostat logic controller

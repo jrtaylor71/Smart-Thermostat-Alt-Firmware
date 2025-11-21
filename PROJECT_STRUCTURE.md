@@ -15,7 +15,7 @@ Smart-Thermostat-Alt-Firmware/
 ├── 📄 Thermostat-sch.pdf                # Hardware schematic reference
 │
 ├── 📁 src/                              # Source code directory
-│   └── 📄 Main-Thermostat.cpp          # Main application source (3096 lines)
+│   └── 📄 Main-Thermostat.cpp          # Main application source (3640+ lines)
 │
 ├── 📁 include/                          # Header files directory
 │   ├── 📄 TFT_Setup_ESP32_S3_Thermostat.h # TFT display configuration (legacy)
@@ -82,24 +82,25 @@ Smart-Thermostat-Alt-Firmware/
 
 ### Source Code Architecture
 
-#### `src/Main-Thermostat.cpp` (3532 lines)
-- Single comprehensive source file containing complete thermostat implementation with 7-day scheduling
+#### `src/Main-Thermostat.cpp` (3640+ lines)
+- Single comprehensive source file containing complete thermostat implementation with 7-day scheduling and LD2410 motion detection
 - Organized into logical function groups with clear separation of concerns
-- **Version**: 1.1.0 with advanced ESP32-S3 dual-core architecture and scheduling system
+- **Version**: 1.1.0 with advanced ESP32-S3 dual-core architecture, scheduling system, and motion sensor integration
 
 **Code Organization:**
 - **Lines 1-50**: Header, license, and hardware credits
-- **Lines 51-200**: Constants, pin definitions, and hardware configuration
-- **Lines 201-300**: Global variables, system state, and scheduling structures
-- **Lines 301-400**: Function prototypes organized by category (including schedule functions)
-- **Lines 401-650**: Setup, initialization, and schedule loading functions
-- **Lines 651-850**: Main loop with non-blocking task scheduling and schedule checking
+- **Lines 51-200**: Constants, pin definitions, and hardware configuration (including LD2410 pins)
+- **Lines 201-300**: Global variables, system state, scheduling structures, and motion sensor variables
+- **Lines 301-400**: Function prototypes organized by category (including schedule and motion sensor functions)
+- **Lines 401-650**: Setup, initialization, schedule loading, and LD2410 initialization functions
+- **Lines 651-850**: Main loop with non-blocking task scheduling, schedule checking, and motion detection
 - **Lines 851-1000**: Dual-core FreeRTOS task functions
-- **Lines 1001-1600**: Display management (Option C centralized approach)
+- **Lines 1001-1600**: Display management (Option C centralized approach with motion wake)
 - **Lines 1601-2300**: HVAC control logic with multi-stage support and schedule application
-- **Lines 2301-2900**: Communication systems (MQTT, WiFi, web server with schedule routes)
+- **Lines 2301-2900**: Communication systems (MQTT, WiFi, web server with schedule routes and motion sensor discovery)
 - **Lines 2901-3200**: Settings management, schedule persistence, and preferences
-- **Lines 3201-3532**: Utility functions and hardware abstraction
+- **Lines 3201-3400**: Motion sensor functions (testLD2410Connection, readMotionSensor)
+- **Lines 3401-3640+**: Utility functions and hardware abstraction
 
 ### Web Interface Architecture
 
@@ -253,12 +254,14 @@ build_flags =
 
 ### Key Features Implemented
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **LD2410 Motion Sensor Integration**: 24GHz mmWave radar with automatic display wake and robust detection logic
 - **Modern Tabbed Web Interface**: All features embedded in main page - no separate pages, always-visible options
 - **Dual-Core Architecture**: Core 0 (UI/Network), Core 1 (Sensors/Control)
 - **Material Design UI**: Modern, responsive touch interface with scheduling integration
-- **Enhanced Home Assistant Integration**: MQTT auto-discovery with schedule status publishing and comprehensive entities
+- **Enhanced Home Assistant Integration**: MQTT auto-discovery with schedule status publishing, motion sensor entities, and comprehensive device grouping
 - **Multi-Stage HVAC**: Advanced heating/cooling with staging support and schedule integration
 - **Schedule MQTT Integration**: Real-time schedule status and override control via MQTT
+- **Motion-Based Display Wake**: Automatic display wake on motion detection with seamless touch integration
 - **Comprehensive Web Configuration**: Tabbed interface with Status, Settings, Schedule, and System tabs
 - **Persistent Schedule Storage**: All schedule settings saved to NVS with automatic loading
 - **Enhanced Safety Features**: Improved hydronic [LOCKOUT] system, watchdog timers, and sensor validation

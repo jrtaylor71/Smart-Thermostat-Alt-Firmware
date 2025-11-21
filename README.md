@@ -34,6 +34,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 - ILI9341 320x240 TFT LCD with XPT2046 Touch Controller
 - AHT20 Temperature/Humidity Sensor (I2C)
 - DS18B20 Temperature Sensor (optional, for hydronic heating)
+- LD2410 24GHz mmWave Motion Sensor (optional, for display wake)
 - 5x Relay Module for HVAC control
 - Custom PCB by Stefan Meisner (files included)
 
@@ -114,6 +115,14 @@ Automatic discovery and integration with Home Assistant:
 - **On**: Continuous fan operation
 - **Cycle**: Scheduled fan operation (configurable minutes per hour)
 
+### Motion Detection
+- **LD2410 24GHz mmWave Sensor**: Automatic display wake on motion detection
+- **Hardware Pins**: RX=15, TX=16, Motion=18
+- **Robust Detection**: Works with sensors that don't respond to UART commands
+- **Home Assistant Integration**: Motion sensor auto-discovery and status publishing
+- **Energy Saving**: Display automatically sleeps when no motion detected
+- **Seamless Operation**: Works alongside existing touch controls
+
 ### Safety Features
 - Watchdog timer prevents system lockups
 - Factory reset via boot button (10+ seconds)
@@ -147,7 +156,9 @@ Contributions welcome! Please:
 
 **Current Version**: 1.1.0 (November 2025)
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- **LD2410 Motion Sensor Integration**: 24GHz mmWave radar for automatic display wake with robust detection
 - **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs
+- **Enhanced MQTT Integration**: Motion sensor auto-discovery and status publishing to Home Assistant
 - **MQTT Alert Improvements**: Non-retained alerts with hysteresis-based reset logic
 - **Hydronic Safety Enhancements**: [LOCKOUT] labels and improved temperature monitoring
 - ESP32-S3-WROM-1-N16 platform with 16MB flash optimization

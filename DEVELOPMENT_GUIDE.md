@@ -5,12 +5,12 @@ This guide helps developers understand, modify, and extend the Smart Thermostat 
 ## 🎯 Project Architecture Overview
 
 ### Current Implementation Status
-- **Version**: 1.0.8 (November 2025)
+- **Version**: 1.1.0 (November 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
 - **Display**: ILI9341 320x240 TFT with XPT2046 touch controller
-- **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp)
+- **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp), LD2410 (24GHz mmWave motion)
 - **Architecture**: Dual-core FreeRTOS with Option C centralized display management
-- **Memory Usage**: ~3.14MB flash (30.3% utilization with huge_app.csv partition)
+- **Memory Usage**: ~3.2MB flash (32.2% utilization with huge_app.csv partition)
 
 ## 🎯 Development Environment Setup
 
@@ -41,9 +41,10 @@ code .
 2. **ILI9341 TFT Display with XPT2046**: 320x240 SPI display with resistive touch
 3. **AHT20 Sensor**: I2C temperature/humidity sensor
 4. **DS18B20 Sensor**: OneWire water temperature sensor (optional)
-5. **5x Relay Module**: For HVAC control simulation
-6. **Custom PCB**: Professional PCB design by Stefan Meisner (recommended)
-7. **Development Breadboard**: For prototyping connections
+5. **LD2410 Motion Sensor**: 24GHz mmWave radar for occupancy detection (pins 15, 16, 18)
+6. **5x Relay Module**: For HVAC control simulation
+7. **Custom PCB**: Professional PCB design by Stefan Meisner (recommended)
+8. **Development Breadboard**: For prototyping connections
 
 ## 🏗️ Code Architecture
 

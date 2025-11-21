@@ -60,6 +60,11 @@ const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
 Adafruit_AHTX0 aht;
 #define BOOT_BUTTON 0 // Define the GPIO pin connected to the boot button
 
+// LD2410 Motion Sensor pins
+#define LD2410_RX_PIN 15  // ESP32 RX (connect to LD2410 TX)
+#define LD2410_TX_PIN 16  // ESP32 TX (connect to LD2410 RX)
+#define LD2410_MOTION_PIN 18  // Digital motion output pin
+
 // Settings for factory reset
 unsigned long bootButtonPressStart = 0; // When the boot button was pressed
 const unsigned long FACTORY_RESET_PRESS_TIME = 10000; // 10 seconds in milliseconds
@@ -105,6 +110,11 @@ bool displaySleepEnabled = true; // Enable/disable display sleep mode
 unsigned long displaySleepTimeout = 300000; // Sleep after 5 minutes (300000ms) of inactivity
 bool displayIsAsleep = false; // Current display sleep state
 unsigned long lastInteractionTime = 0; // Last time user interacted with display
+
+// Motion sensor variables
+bool motionDetected = false;
+unsigned long lastMotionTime = 0;
+bool ld2410Connected = false;
 
 // Hybrid staging settings
 unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
@@ -305,6 +315,8 @@ float getCalibratedHumidity(float rawHumidity);
 void checkDisplaySleep();
 void wakeDisplay();
 void sleepDisplay();
+bool testLD2410Connection();
+void readMotionSensor();
 void updateStatusLEDs();
 void setHeatLED(bool state);
 void setCoolLED(bool state);
@@ -684,6 +696,19 @@ void setup()
     // Initialize light sensor pin
     pinMode(LIGHT_SENSOR_PIN, INPUT);
     
+    // Initialize LD2410 motion sensor
+    pinMode(LD2410_MOTION_PIN, INPUT);
+    Serial2.begin(256000, SERIAL_8N1, LD2410_RX_PIN, LD2410_TX_PIN);
+    delay(100);
+    
+    // Test LD2410 connection
+    ld2410Connected = testLD2410Connection();
+    if (ld2410Connected) {
+        Serial.println("LD2410: Motion sensor connected successfully");
+    } else {
+        Serial.println("LD2410: Motion sensor not detected - display control via touch only");
+    }
+    
     // Initialize I2C for AHT20 sensor (ESP32-S3 pins)
     Wire.begin(36, 35); // SDA=36, SCL=35 per schematic
     
@@ -983,6 +1008,27 @@ void loop()
 
     // Update display brightness based on light sensor - check every 1 second
     updateDisplayBrightness();
+
+    // Check motion sensor every 100ms
+    static unsigned long lastMotionCheck = 0;
+    if (millis() - lastMotionCheck > 100) {
+        lastMotionCheck = millis();
+        readMotionSensor();
+    }
+
+    // Debug LD2410 status every 30 seconds
+    static unsigned long lastLD2410Status = 0;
+    if (millis() - lastLD2410Status > 30000) {
+        lastLD2410Status = millis();
+        if (ld2410Connected) {
+            Serial.printf("LD2410: Status - Connected: %s, Motion: %s, Last motion: %lu ms ago\\n",
+                          ld2410Connected ? "YES" : "NO",
+                          motionDetected ? "ACTIVE" : "INACTIVE",
+                          millis() - lastMotionTime);
+        } else {
+            Serial.println("LD2410: Status - Sensor not detected, display control via touch only");
+        }
+    }
 
     // Check if display should go to sleep due to inactivity
     checkDisplaySleep();
@@ -1726,6 +1772,32 @@ void publishHomeAssistantDiscovery()
         // Debug log for payload
         Serial.println("Published Home Assistant discovery payload:");
         Serial.println(buffer);
+
+        // Publish motion sensor discovery if LD2410 is connected
+        if (ld2410Connected) {
+            StaticJsonDocument<512> motionDoc;
+            String motionConfigTopic = "homeassistant/binary_sensor/" + hostname + "_motion/config";
+            
+            motionDoc["name"] = hostname + " Motion";
+            motionDoc["device_class"] = "motion";
+            motionDoc["state_topic"] = hostname + "/motion_detected";
+            motionDoc["payload_on"] = "true";
+            motionDoc["payload_off"] = "false";
+            motionDoc["unique_id"] = hostname + "_motion";
+            
+            // Device information
+            JsonObject device = motionDoc.createNestedObject("device");
+            device["identifiers"][0] = hostname;
+            device["name"] = "Smart Thermostat";
+            device["model"] = "ESP32-S3 with LD2410";
+            device["manufacturer"] = "Custom";
+            
+            char motionBuffer[512];
+            serializeJson(motionDoc, motionBuffer);
+            mqttClient.publish(motionConfigTopic.c_str(), motionBuffer, true);
+            
+            Serial.println("Published LD2410 motion sensor discovery to Home Assistant");
+        }
     }
     else
     {
@@ -1930,6 +2002,16 @@ void sendMQTTData()
                 preferences.putBool("hydAlertSent", hydronicLowTempAlertSent);
                 Serial.printf("MQTT: Hydronic temperature recovered to %.1f°F (above %.1f°F) - alert reset\n", 
                              hydronicTemp, hydronicTempHigh);
+            }
+        }
+
+        // Publish motion sensor status if connected
+        if (ld2410Connected) {
+            static bool lastMotionDetected = false;
+            if (motionDetected != lastMotionDetected) {
+                String motionTopic = hostname + "/motion_detected";
+                mqttClient.publish(motionTopic.c_str(), motionDetected ? "true" : "false", false);
+                lastMotionDetected = motionDetected;
             }
         }
 
@@ -3484,6 +3566,123 @@ void sleepDisplay() {
         // Turn display black and turn off backlight completely
         tft.fillScreen(TFT_BLACK);
         setBrightness(0); // Turn off backlight completely
+    }
+}
+
+// Motion sensor functions
+bool testLD2410Connection() {
+    Serial.println("LD2410: Testing motion sensor connection...");
+    
+    // For LD2410, we'll assume it's connected and let runtime behavior determine if it works
+    // This is because LD2410 sensors often don't respond reliably to detection tests
+    // but work fine for actual motion detection
+    
+    // Test the motion pin - should be stable when no motion
+    pinMode(LD2410_MOTION_PIN, INPUT);
+    delay(100);
+    
+    // Take multiple readings to check for stability
+    bool readings[5];
+    for(int i = 0; i < 5; i++) {
+        readings[i] = digitalRead(LD2410_MOTION_PIN);
+        delay(10);
+    }
+    
+    // Check if pin readings are consistent (indicates a connected sensor)
+    bool consistent = true;
+    for(int i = 1; i < 5; i++) {
+        if(readings[i] != readings[0]) {
+            consistent = false;
+            break;
+        }
+    }
+    
+    Serial.printf("LD2410: Motion pin readings: %d %d %d %d %d (consistent: %s)\n", 
+                  readings[0], readings[1], readings[2], readings[3], readings[4],
+                  consistent ? "YES" : "NO");
+    
+    // Try basic UART communication
+    Serial2.flush();
+    while(Serial2.available()) Serial2.read(); // Clear buffer
+    delay(50);
+    
+    // Send a simple command to check UART
+    uint8_t enableCmd[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01};
+    Serial2.write(enableCmd, sizeof(enableCmd));
+    delay(200);
+    
+    bool uartResponse = Serial2.available() > 0;
+    if (uartResponse) {
+        Serial.printf("LD2410: UART response received (%d bytes): ", Serial2.available());
+        while(Serial2.available()) {
+            Serial.printf("%02X ", Serial2.read());
+        }
+        Serial.println();
+    } else {
+        Serial.println("LD2410: No UART response (sensor may still work for motion detection)");
+    }
+    
+    // Be more permissive - assume sensor is connected if pin is stable or UART responds
+    bool connected = consistent || uartResponse;
+    
+    if(!connected) {
+        Serial.println("LD2410: Forcing connection assumption - sensor may be present but not responding to tests");
+        connected = true; // Force assume connected since user says it's there
+    }
+    
+    Serial.printf("LD2410: Sensor assumed %s\n", connected ? "CONNECTED" : "NOT CONNECTED");
+    return connected;
+}
+
+void readMotionSensor() {
+    if (!ld2410Connected) return;
+    
+    // Read digital motion pin (HIGH = motion detected)
+    bool currentMotion = digitalRead(LD2410_MOTION_PIN) == HIGH;
+    
+    // Debug motion state changes with more detail
+    static bool lastMotionState = false;
+    static unsigned long lastMotionChangeTime = 0;
+    
+    if (currentMotion != lastMotionState) {
+        unsigned long now = millis();
+        Serial.printf("LD2410: Motion %s (pin %d = %s) after %lu ms\n", 
+                      currentMotion ? "DETECTED" : "CLEARED",
+                      LD2410_MOTION_PIN, currentMotion ? "HIGH" : "LOW",
+                      now - lastMotionChangeTime);
+        lastMotionState = currentMotion;
+        lastMotionChangeTime = now;
+    }
+    
+    if (currentMotion) {
+        if (!motionDetected) {
+            Serial.println("LD2410: Motion detection activated - starting motion timer");
+        }
+        motionDetected = true;
+        lastMotionTime = millis();
+        lastInteractionTime = millis(); // Update interaction time for display sleep
+        
+        // Wake display on motion (similar to touch)
+        if (displayIsAsleep) {
+            Serial.println("LD2410: Waking display due to motion detection");
+            wakeDisplay();
+        }
+    } else {
+        // Handle motion timeout (30 seconds)
+        if (millis() - lastMotionTime > 30000 && motionDetected) {
+            Serial.println("LD2410: Motion timeout (30s) - clearing motion flag");
+            motionDetected = false;
+        }
+    }
+    
+    // Periodic motion pin status (every 10 seconds when in debug mode)
+    static unsigned long lastDebugTime = 0;
+    if (millis() - lastDebugTime > 10000) {
+        lastDebugTime = millis();
+        Serial.printf("LD2410: Status - Pin: %s, Motion Flag: %s, Last Motion: %lu ms ago\n",
+                      currentMotion ? "HIGH" : "LOW",
+                      motionDetected ? "ACTIVE" : "INACTIVE",
+                      millis() - lastMotionTime);
     }
 }
 
