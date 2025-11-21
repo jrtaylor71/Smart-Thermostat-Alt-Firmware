@@ -94,6 +94,14 @@ body {
   padding: 24px;
 }
 
+.tab-content {
+  display: none !important;
+}
+
+.tab-content.active {
+  display: block !important;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -455,7 +463,10 @@ let updateInterval;
 function showTab(tabName) {
     // Hide all tab contents
     const contents = document.querySelectorAll('.tab-content');
-    contents.forEach(content => content.style.display = 'none');
+    contents.forEach(content => {
+        content.classList.remove('active');
+        content.classList.remove('fade-in');
+    });
     
     // Remove active class from all tabs
     const tabs = document.querySelectorAll('.nav-tab');
@@ -464,7 +475,7 @@ function showTab(tabName) {
     // Show selected tab content
     const selectedContent = document.getElementById(tabName + '-content');
     if (selectedContent) {
-        selectedContent.style.display = 'block';
+        selectedContent.classList.add('active');
         selectedContent.classList.add('fade-in');
     }
     

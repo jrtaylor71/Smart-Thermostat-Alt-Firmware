@@ -2327,6 +2327,18 @@ void handleWebRequests()
         request->send(200, "application/json", "{\"status\": \"success\"}");
     });
 
+    server.on("/reboot", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        request->send(200, "text/html", "<html><head><meta http-equiv='refresh' content='10;url=/'>" 
+                      "<title>Rebooting...</title></head><body>" 
+                      "<h1>Rebooting Device...</h1>" 
+                      "<p>Please wait while the device restarts. You will be redirected to the main page in 10 seconds.</p>" 
+                      "<p><a href='/'>Return to Main Page</a></p>" 
+                      "</body></html>");
+        delay(1000);
+        ESP.restart();
+    });
+    
     server.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *request)
               {
         request->send(200, "text/plain", "Rebooting...");
@@ -2336,7 +2348,29 @@ void handleWebRequests()
 
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        request->redirect("/");
+        String html = "<!DOCTYPE html><html><head><title>OTA Update</title>";
+        html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+        html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
+        html += ".container{max-width:600px;margin:0 auto;background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}";
+        html += "h1{color:#1976d2;margin-bottom:20px}";
+        html += ".upload-area{border:2px dashed #ccc;padding:40px;text-align:center;margin:20px 0;border-radius:8px}";
+        html += "input[type=file]{margin:20px 0}";
+        html += ".btn{background:#1976d2;color:white;padding:12px 24px;border:none;border-radius:4px;cursor:pointer;font-size:16px}";
+        html += ".btn:hover{background:#1565c0}";
+        html += ".progress{display:none;margin:20px 0}";
+        html += ".progress-bar{width:100%;height:20px;background:#e0e0e0;border-radius:10px;overflow:hidden}";
+        html += ".progress-fill{height:100%;background:#4caf50;width:0%;transition:width 0.3s}</style></head><body>";
+        html += "<div class='container'><h1>📤 Firmware Update</h1>";
+        html += "<p>Select a firmware binary file (.bin) to upload:</p>";
+        html += "<form method='POST' action='/update' enctype='multipart/form-data' id='uploadForm'>";
+        html += "<div class='upload-area'><input type='file' name='update' accept='.bin' required>";
+        html += "<br><button type='submit' class='btn'>Upload Firmware</button></div></form>";
+        html += "<div class='progress' id='progress'><div class='progress-bar'><div class='progress-fill' id='progressFill'></div></div>";
+        html += "<p id='status'>Uploading...</p></div>";
+        html += "<p><a href='/'>← Back to Main Page</a></p></div>";
+        html += "<script>document.getElementById('uploadForm').onsubmit=function(){document.getElementById('progress').style.display='block'}</script>";
+        html += "</body></html>";
+        request->send(200, "text/html", html);
     });
 
     server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
@@ -2508,8 +2542,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
     // Check if status has changed and update only when necessary
     if (heatActive != prevHeatingStatus || coolActive != prevCoolingStatus || fanActive != prevFanStatus)
     {
-        // Clear the status indicator area
-        tft.fillRect(0, 150, 320, 30, COLOR_BACKGROUND);
+        // Clear the status indicator area - make sure to clear the full area where indicators are drawn
+        tft.fillRect(0, 145, 320, 35, COLOR_BACKGROUND);
         
         // Draw heat indicator if heating is on
         if (heatActive)

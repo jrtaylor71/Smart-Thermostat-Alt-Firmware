@@ -45,7 +45,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "</div>";
     
     // Status tab content
-    html += "<div id='status-content' class='tab-content content'>";
+    html += "<div id='status-content' class='tab-content content active'>";
     
     // Main temperature display
     html += "<div class='status-card' style='text-align: center; margin-bottom: 24px;'>";
@@ -140,7 +140,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "</div>"; // End status-content tab
     
     // Settings tab content (embedded settings form)
-    html += "<div id='settings-content' class='tab-content content' style='display: none;'>";
+    html += "<div id='settings-content' class='tab-content content'>";
     html += "<form action='/set' method='POST' onsubmit='return handleSettingsSubmit(event);'>";
     
     // Basic Settings Section
@@ -382,52 +382,70 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "<div class='form-group'>";
     html += "<label class='form-label'>Display Sleep Timeout (minutes)</label>";
     html += "<input type='number' name='displaySleepTimeout' value='" + String(displaySleepTimeout / 60000) + "' class='form-input'>";
-    html += "</div;";
+    html += "</div>";
     
     html += "</div>"; // End sensor settings section
     
-    // System Information
+    // Settings Actions
     html += "<div class='settings-section'>";
-    html += "<h3>System Information</h3>";
-    html += "<div style='padding: 16px; background: var(--surface-color); border-radius: 8px; margin-bottom: 16px;'>";
-    html += "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 0.9rem;'>";
-    html += "<div><strong>Firmware Version:</strong><br>" + version_info + "</div>";
-    html += "<div><strong>Hostname:</strong><br>" + hostname + "</div>";
-    html += "<div><strong>WiFi SSID:</strong><br>" + wifiSSID + "</div>";
-    html += "<div><strong>IP Address:</strong><br>" + WiFi.localIP().toString() + "</div>";
-    html += "</div>";
-    html += "</div>";
-    html += "</div>"; // End system info section
-    
-    // System Actions
-    html += "<div class='settings-section'>";
-    html += "<h3>System Actions</h3>";
+    html += "<h3>Settings Actions</h3>";
     html += "<div class='button-group'>";
     html += "<input type='submit' value='Save All Settings' class='btn btn-primary'>";
-    html += "<a href='/update' class='btn btn-secondary'>OTA Update</a>";
-    html += "<button type='button' onclick='confirmAction(\"reboot the system\", \"/reboot\")' class='btn btn-warning'>Reboot</button>";
-    html += "<a href='/confirm_restore' class='btn btn-danger'>Factory Reset</a>";
     html += "</div>";
-    html += "</div>"; // End system actions section
+    html += "</div>"; // End settings actions section
     
     html += "</form>";
     html += "</div>"; // End settings-content tab
     
     // System tab content
-    html += "<div id='system-content' class='tab-content content' style='display: none;'>";
+    html += "<div id='system-content' class='tab-content content'>";
     html += "<div class='status-card'>";
     html += "<div class='card-header'>";
     html += ICON_SETTINGS;
-    html += "<h3 class='card-title'>System Management</h3>";
+    html += "<h2 class='card-title' style='color: #2196F3;'>System Information</h2>";
     html += "</div>";
-    html += "<p>Manage system functions and maintenance tasks.</p>";
-    html += "<div class='button-group'>";
-    html += "<a href='/update' class='btn btn-primary'>OTA Update</a>";
-    html += "<button onclick='confirmAction(\"reboot the system\", \"/reboot\")' class='btn btn-warning'>Reboot</button>";
-    html += "<a href='/confirm_restore' class='btn btn-danger'>Factory Reset</a>";
+    html += "<div style='padding: 16px;'>";
+    html += "<p><strong>Firmware Version:</strong> <span style='color: #4CAF50;'>" + version_info + "</span></p>";
+    html += "<p><strong>Device Hostname:</strong> " + hostname + "</p>";
+    html += "<p><strong>WiFi Network:</strong> " + wifiSSID + "</p>";
+    html += "<p><strong>IP Address:</strong> " + WiFi.localIP().toString() + "</p>";
+    html += "<p><strong>MAC Address:</strong> " + WiFi.macAddress() + "</p>";
+    html += "<p><strong>Free Heap:</strong> " + String(ESP.getFreeHeap()) + " bytes</p>";
+    html += "<p><strong>Uptime:</strong> " + String(millis() / 1000) + " seconds</p>";
+    html += "<p><strong>Flash Size:</strong> " + String(ESP.getFlashChipSize() / 1024 / 1024) + " MB</p>";
+    html += "<p><strong>Chip Model:</strong> " + String(ESP.getChipModel()) + "</p>";
+    html += "<p><strong>CPU Frequency:</strong> " + String(ESP.getCpuFreqMHz()) + " MHz</p>";
     html += "</div>";
     html += "</div>";
+    
+    html += "<div class='status-card' style='margin-top: 24px;'>";
+    html += "<div class='card-header'>";
+    html += ICON_UPDATE;
+    html += "<h2 class='card-title' style='color: #2196F3;'>📤 Firmware Update</h2>";
     html += "</div>";
+    html += "<div style='padding: 16px;'>";
+    html += "<form method='POST' action='/update' enctype='multipart/form-data' style='margin-bottom: 16px;'>";
+    html += "<div style='border: 2px dashed #ccc; padding: 20px; text-align: center; border-radius: 8px; margin: 16px 0;'>";
+    html += "<p><strong>Select Firmware File (.bin):</strong></p>";
+    html += "<input type='file' name='update' accept='.bin' required style='margin: 10px 0;'>";
+    html += "<br><button type='submit' class='btn btn-primary' onclick='return confirm(\"Are you sure you want to update the firmware? The device will reboot after update.\")'>📤 Upload Firmware</button>";
+    html += "</div>";
+    html += "</form>";
+    html += "<p style='font-size: 0.9em; color: #666;'><em>⚠️ Only upload firmware (.bin) files. Device will reboot automatically after successful update.</em></p>";
+    html += "</div>";
+    html += "</div>";
+    
+    html += "<div class='status-card' style='margin-top: 24px;'>";
+    html += "<div class='card-header'>";
+    html += ICON_SETTINGS;
+    html += "<h2 class='card-title' style='color: #FF9800;'>System Actions</h2>";
+    html += "</div>";
+    html += "<div class='button-group' style='padding: 16px;'>";
+    html += "<a href='/reboot' class='btn btn-secondary' onclick='return confirm(\"Are you sure you want to reboot the device?\")'>♻️ Reboot Device</a>";
+    html += "<a href='/confirm_restore' class='btn btn-danger' onclick='return confirm(\"WARNING: This will reset all settings to defaults. Are you sure?\")'>⚠️ Factory Reset</a>";
+    html += "</div>";
+    html += "</div>";
+    html += "</div>"; // End system-content tab
     
     html += "</div>"; // End container
     html += JAVASCRIPT_CODE;
