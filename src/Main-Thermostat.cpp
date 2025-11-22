@@ -638,6 +638,14 @@ void loadScheduleSettings() {
     overrideEndTime = preferences.getULong("overrideEnd", 0);
     activePeriod = preferences.getString("activePeriod", "manual");
     
+    // Check if schedule data exists, if not initialize defaults silently
+    bool scheduleExists = preferences.isKey("day0_d_heat");
+    if (!scheduleExists) {
+        Serial.println("SCHEDULE: First boot detected, initializing default schedule data...");
+        saveScheduleSettings(); // Save the compiled-in defaults to NVS
+        return; // Skip the individual loading since we just saved defaults
+    }
+    
     // Load each day's schedule with defaults
     for (int day = 0; day < 7; day++) {
         String dayPrefix = "day" + String(day) + "_";
@@ -1729,7 +1737,7 @@ void publishHomeAssistantDiscovery()
 
         // Publish discovery message for the thermostat device
         String configTopic = "homeassistant/climate/" + hostname + "/config";
-        doc["name"] = ""; // Use hostname instead of hardcoded name
+        doc["name"] = hostname; // Use hostname for device name
         doc["unique_id"] = hostname;
         doc["current_temperature_topic"] = hostname + "/current_temperature";
         doc["current_humidity_topic"] = hostname + "/current_humidity";
@@ -1759,7 +1767,7 @@ void publishHomeAssistantDiscovery()
         device["identifiers"] = hostname;
         device["name"] = hostname;
         device["manufacturer"] = "TDC";
-        device["model"] = "Simple Thermostat";
+        device["model"] = "Simple Thermostat Alt Firmware";
         device["sw_version"] = sw_version;
 
         serializeJson(doc, buffer);
@@ -1788,7 +1796,7 @@ void publishHomeAssistantDiscovery()
             // Device information
             JsonObject device = motionDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
-            device["name"] = "Smart Thermostat";
+            device["name"] = hostname;
             device["model"] = "ESP32-S3 with LD2410";
             device["manufacturer"] = "Custom";
             
