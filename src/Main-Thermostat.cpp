@@ -1737,7 +1737,7 @@ void publishHomeAssistantDiscovery()
 
         // Publish discovery message for the thermostat device
         String configTopic = "homeassistant/climate/" + hostname + "/config";
-        doc["name"] = hostname; // Use hostname for device name
+        doc["name"] = "";
         doc["unique_id"] = hostname;
         doc["current_temperature_topic"] = hostname + "/current_temperature";
         doc["current_humidity_topic"] = hostname + "/current_humidity";

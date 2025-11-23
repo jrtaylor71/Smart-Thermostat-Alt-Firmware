@@ -1,11 +1,11 @@
 me-no-dev/AsyncTCP@^1.1.1
 WiFi
-bblanchon/ArduinoJson@^6.21.3
+me-no-dev/ESPAsyncWebServer@^1.2.3
+milesburton/DallasTemperature@^3.11.0
 adafruit/Adafruit AHTX0@^2.0.5
 bodmer/TFT_eSPI@^2.5.43
+bblanchon/ArduinoJson@^6.21.3
+paulstoffregen/OneWire@^2.3.7
+adafruit/Adafruit Unified Sensor@^1.1.4
 Preferences
 knolleary/PubSubClient@^2.8
-paulstoffregen/OneWire@^2.3.7
-milesburton/DallasTemperature@^3.11.0
-me-no-dev/ESPAsyncWebServer@^1.2.3
-adafruit/Adafruit Unified Sensor@^1.1.4
