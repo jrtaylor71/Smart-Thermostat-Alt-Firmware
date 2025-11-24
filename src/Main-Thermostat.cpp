@@ -451,9 +451,10 @@ void updateDisplayIndicators() {
         xSemaphoreGive(displayUpdateMutex);
         
         // Update physical LED indicators (hardware I/O outside mutex)
-        setHeatLED(displayIndicators.heatIndicator);
-        setCoolLED(displayIndicators.coolIndicator);  
-        setFanLED(displayIndicators.fanIndicator);
+        // LEDs show ACTIVE state (what's actually running), not just mode
+        setHeatLED(heatingOn);
+        setCoolLED(coolingOn);  
+        setFanLED(fanOn);
         
         Serial.print("DISPLAY_UPDATE: Heat=");
         Serial.print(displayIndicators.heatIndicator ? "ON" : "OFF");
@@ -1092,12 +1093,8 @@ void loop()
         lastRelayControlTime = currentTime;
     }
 
-    // Update LED status frequently for responsive feedback
-    static unsigned long lastLEDUpdateTime = 0;
-    if (currentTime - lastLEDUpdateTime > 100) { // Update LEDs every 100ms
-        updateStatusLEDs();
-        lastLEDUpdateTime = currentTime;
-    }
+    // LEDs are updated from state-changing functions (activateHeating, activateCooling, turnOffAllRelays)
+    // No need for frequent polling - only update when state actually changes
 }
 
 void setupWiFi()
@@ -2120,11 +2117,12 @@ void controlRelays(float currentTemp)
                      (currentTemp < (setTempHeat - tempSwing)) ? "YES" : "NO");
         if (currentTemp < (setTempHeat - tempSwing))
         {
+            // Only call activateHeating if not already heating
             if (!heatingOn) {
                 Serial.printf("Activating heating: current %.1f < setpoint-swing %.1f\n", 
                              currentTemp, (setTempHeat - tempSwing));
+                activateHeating();
             }
-            activateHeating();
         }
         // Only turn off if above setpoint (hysteresis)
         else if (currentTemp >= setTempHeat)
@@ -2159,22 +2157,23 @@ void controlRelays(float currentTemp)
                      (currentTemp > (setTempCool + tempSwing)) ? "YES" : "NO");
         if (currentTemp > (setTempCool + tempSwing))
         {
+            // Only call activateCooling if not already cooling
             if (!coolingOn) {
                 Serial.printf("Activating cooling: current %.1f > setpoint+swing %.1f\n", 
                              currentTemp, (setTempCool + tempSwing));
+                activateCooling();
             }
-            activateCooling();
         }
         // Only turn off if below setpoint (hysteresis)
-        else if (currentTemp <= setTempCool)
+        else if (currentTemp < setTempCool)
         {
             if (heatingOn || coolingOn || fanOn) {
-                Serial.printf("Deactivating cooling: current %.1f <= setpoint %.1f\n", 
+                Serial.printf("Deactivating cooling: current %.1f < setpoint %.1f\n", 
                              currentTemp, setTempCool);
             }
             turnOffAllRelays();
         }
-        // Otherwise maintain current state (hysteresis band)
+        // Otherwise maintain current state (hysteresis band between setpoint and setpoint+swing)
     }
     else if (thermostatMode == "auto")
     {
@@ -2222,6 +2221,10 @@ void controlRelays(float currentTemp)
         Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f, swing=%.1f\n", 
                      thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto, tempSwing);
         Serial.printf("Relay states: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
+        
+        // CONSOLIDATED UPDATE: Update LEDs and display when relay state changes
+        updateStatusLEDs();
+        setDisplayUpdateFlag();
         
         // Update previous states
         prevHeatingOn = heatingOn;
@@ -3708,17 +3711,12 @@ void setFanLED(bool state) {
 }
 
 void updateStatusLEDs() {
-    // Update heat LED - on if any heating stage is active
-    bool heatActive = (digitalRead(heatRelay1Pin) == HIGH) || (digitalRead(heatRelay2Pin) == HIGH);
-    setHeatLED(heatActive);
-    
-    // Update cool LED - on if any cooling stage is active
-    bool coolActive = (digitalRead(coolRelay1Pin) == HIGH) || (digitalRead(coolRelay2Pin) == HIGH);
-    setCoolLED(coolActive);
-    
-    // Update fan LED - on if fan relay is active
-    bool fanActive = (digitalRead(fanRelayPin) == HIGH);
-    setFanLED(fanActive);
+    // Update LEDs based on STATE FLAGS, not actual relay pin states
+    // This prevents flickering and provides stable visual feedback
+    // LEDs reflect the intended state (heatingOn/coolingOn/fanOn), not the physical relay pins
+    setHeatLED(heatingOn);
+    setCoolLED(coolingOn);
+    setFanLED(fanOn);
 }
 
 // Buzzer control functions using PWM channel for tone generation
