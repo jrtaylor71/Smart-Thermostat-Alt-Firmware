@@ -360,6 +360,13 @@ float previousSetTemp = 0.0;
 bool firstHourAfterBoot = true; // Flag to track the first hour after bootup
 volatile bool mqttFeedbackNeeded = false; // Flag for immediate MQTT feedback on settings change
 
+// Temperature and humidity filtering (exponential moving average)
+float filteredTemp = 0.0;              // EMA-filtered temperature
+float filteredHumidity = 0.0;          // EMA-filtered humidity
+const float tempEMAAlpha = 0.1;        // Temperature smoothing factor (0.1 = 10% new, 90% previous)
+const float humidityEMAAlpha = 0.15;   // Humidity smoothing factor (0.15 = 15% new, 85% previous)
+bool firstSensorReading = true;        // Flag to initialize filters on first read
+
 // Sensor reading task (runs on core 1)
 void sensorTaskFunction(void *parameter) {
     for (;;) {
@@ -378,8 +385,19 @@ void sensorTaskFunction(void *parameter) {
         
         // Update globals if valid
         if (!isnan(newTemp) && !isnan(newHumidity)) {
-            currentTemp = newTemp;
-            currentHumidity = newHumidity;
+            // Apply exponential moving average filtering for smoother readings
+            if (firstSensorReading) {
+                filteredTemp = newTemp;
+                filteredHumidity = newHumidity;
+                firstSensorReading = false;
+            } else {
+                // EMA filter: smoothed_value = alpha * new_value + (1 - alpha) * previous_value
+                filteredTemp = (tempEMAAlpha * newTemp) + ((1.0 - tempEMAAlpha) * filteredTemp);
+                filteredHumidity = (humidityEMAAlpha * newHumidity) + ((1.0 - humidityEMAAlpha) * filteredHumidity);
+            }
+            
+            currentTemp = filteredTemp;
+            currentHumidity = filteredHumidity;
         }
         
         // Read DS18B20 hydronic temperature sensor if present
@@ -396,7 +414,7 @@ void sensorTaskFunction(void *parameter) {
         }
         
         // Control HVAC relays
-        controlRelays(newTemp);
+        controlRelays(currentTemp);
         
         // 5 second delay for responsive control while minimizing CPU load
         vTaskDelay(5000 / portTICK_PERIOD_MS);
@@ -864,6 +882,11 @@ void setup()
     float calibratedHumidity = getCalibratedHumidity(humidity.relative_humidity);
     currentTemp = useFahrenheit ? (calibratedTemp * 9.0 / 5.0 + 32.0) : calibratedTemp;
     currentHumidity = calibratedHumidity;
+    
+    // Initialize filters with first reading
+    filteredTemp = currentTemp;
+    filteredHumidity = currentHumidity;
+    firstSensorReading = false;
 
     // Initial display update
     updateDisplay(currentTemp, currentHumidity);
@@ -2787,10 +2810,7 @@ void handleWebRequests()
 
     server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        sensors_event_t humidity, temp;
-        aht.getEvent(&humidity, &temp);
-        float calibratedTemp = getCalibratedTemperature(temp.temperature);
-        float currentTemp = useFahrenheit ? (calibratedTemp * 9.0 / 5.0 + 32.0) : calibratedTemp;
+        // Use filtered temperature from sensor task instead of raw reading
         String response = "{\"temperature\": \"" + String(currentTemp) + "\"}";
         request->send(200, "application/json", response); });
 

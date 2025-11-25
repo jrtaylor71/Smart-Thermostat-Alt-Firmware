@@ -525,3 +525,174 @@ if (showModeSelection && buttonInModeArea) {
 **The golden rule**: **If it ain't broke, don't fix it.** Focus laser-precision on the actual problem and resist the urge to "improve" working systems while fixing unrelated issues.
 
 This case study cost several hours of debugging and resulted in a more complex, less reliable system before returning to the simple, working approach. The 5-second delay could have been fixed in 5 minutes with proper profiling and root cause analysis.
+
+## HVAC SYSTEMS FUNDAMENTALS - CRITICAL KNOWLEDGE FOR THIS PROJECT
+
+### What Thermostats Actually Do
+A thermostat is a **closed-loop control device** that:
+1. **Measures** the room air temperature via a thermistor or sensor
+2. **Compares** it to a setpoint (desired temperature) 
+3. **Sends control signals** to activate/deactivate HVAC equipment
+4. Uses **hysteresis** (temperature swing) to prevent rapid cycling
+
+**Key Concept**: The thermostat is a SWITCH, not a modulator. It sends ON/OFF signals to the HVAC system.
+
+### Fan Relay Control - THE MOST CRITICAL SETTING
+
+**`fanRelayNeeded` setting controls whether the thermostat or HVAC system operates the fan**:
+
+- **`fanRelayNeeded = true`**: "My HVAC system needs the thermostat to control the fan"
+  - Thermostat sends fan ON signal when heating/cooling runs
+  - Used by furnaces/AC that don't auto-start their own fan
+  - Example: Old furnaces where thermostat controls heat + fan separately
+
+- **`fanRelayNeeded = false`**: "My HVAC system controls its own fan automatically"  
+  - Thermostat does NOT touch the fan relay during heating/cooling
+  - HVAC's internal controls handle fan based on compressor/burner status
+  - Example: Modern split AC systems with built-in fan control
+  - **Thermostat only controls fan in "cycle" and "on" modes**
+
+**THE BUG THAT WAS FIXED IN THIS PROJECT**:
+- ❌ **WRONG**: Fan would turn ON during heating/cooling even when `fanRelayNeeded = false`
+- ✅ **CORRECT**: When `fanRelayNeeded = false`, thermostat stays OFF the fan relay during heating/cooling
+
+### Fan Modes Explained
+
+#### 1. **Fan Mode = "on"**
+- Fan runs **CONTINUOUSLY** until user manually turns it off
+- NOT tied to heating/cooling status
+- `fanRelayNeeded` value is IGNORED in this mode
+
+#### 2. **Fan Mode = "auto"**
+- Fan runs **ONLY WHEN HVAC is actively heating or cooling**
+- **`fanRelayNeeded` controls whether thermostat or HVAC controls the fan**
+  - `true`: Thermostat controls fan relay with heating/cooling
+  - `false`: HVAC controls fan, thermostat stays off the relay
+
+#### 3. **Fan Mode = "cycle"**
+- Fan runs on a **schedule** (e.g., 15 minutes per hour) 
+- Cycles independently regardless of heating/cooling status
+- NOT affected by `fanRelayNeeded` - always thermostat-controlled
+
+### Standard 24V Thermostat Wiring
+
+**R (Red)**: 24V power from HVAC unit
+**W/W1 (White)**: Close to activate heating  
+**Y/Y1 (Yellow)**: Close to activate cooling
+**G (Green)**: Close to run fan
+**C (Common)**: Return path for relays
+
+**How It Works**: When thermostat needs heat, it closes switch between R and W. HVAC furnace receives signal and turns on.
+
+### Bang-Bang Control (What This Device Uses)
+
+On-off switching with hysteresis to prevent rapid cycling:
+- Setpoint = 72°F, Swing = 1°F
+- Heat ON when: temp < 71°F
+- Heat OFF when: temp > 72°F  
+- Result: Temperature oscillates between 71-73°F (normal HVAC behavior)
+
+### Multi-Stage Operation
+
+**Stage 1** (Primary): Main heating/cooling capacity
+**Stage 2** (Auxiliary): Extra capacity for extreme temperature differences
+
+Stage 2 only activates if:
+1. Stage 1 has run for minimum time (default 5 min)
+2. AND temperature is still far from setpoint (default 2°F difference)
+3. AND stage 2 is enabled in settings
+
+### Hydronic System Support
+
+This project monitors boiler water temperature to prevent heating if water is too cold:
+- `hydronicTempLow = 110°F`: Boiler too cold, heating DISABLED (safety lockout)
+- `hydronicTempHigh = 140°F`: Boiler hot enough, heating ENABLED (hysteresis)
+- Prevents: Rapid cycling, inadequate heating, boiler damage
+
+### Common HVAC System Types This Device Supports
+
+1. **Gas Furnace + Central AC**: Thermostat controls W for heat and Y for cooling
+2. **Electric Furnace**: Uses W1/W2 for heating element stages  
+3. **Heat Pump**: Requires reversing valve control (not in current project)
+4. **Hydronic (Boiler)**: Thermostat monitors water temperature via DS18B20 sensor
+
+### Code Implementation - How Thermostat Follows HVAC Standards
+
+**In `controlRelays()` function**:
+1. Check mode (heat/cool/auto/off)
+2. Read current temperature
+3. Compare to setpoint - swing to determine if heating/cooling needed
+4. Call `activateHeating()` or `activateCooling()` or `turnOffAllRelays()`
+5. Call `handleFanControl()` to manage fan based on mode and `fanRelayNeeded`
+
+**In `activateHeating()`**:
+```cpp
+// Close heating relay (W terminal equivalent)
+digitalWrite(heatRelay1Pin, HIGH);
+
+// Handle fan based on fanRelayNeeded setting
+if (fanRelayNeeded) {
+    digitalWrite(fanRelayPin, HIGH);  // Thermostat controls fan
+} else {
+    digitalWrite(fanRelayPin, LOW);   // HVAC controls fan, stay off
+}
+```
+
+**In `handleFanControl()` for auto mode**:
+```cpp
+// Only control fan if thermostat is responsible
+if (fanRelayNeeded) {
+    newFanState = (heatingOn || coolingOn);  // Fan ON during heat/cool
+} else {
+    newFanState = false;  // Don't control - HVAC handles it
+}
+```
+
+### Why This Matters - Real World Examples
+
+**Example 1: Modern Split AC with Built-In Fan Control**
+- System: Fujitsu split AC, separate thermostat input for cooling command
+- HVAC Behavior: When given Y signal, AC automatically starts compressor AND fan
+- Thermostat Setting: `fanRelayNeeded = false`
+- Result: Thermostat only sends Y signal, AC handles everything else
+
+**Example 2: Old Forced-Air Furnace**  
+- System: 1990s gas furnace with separate fan
+- HVAC Behavior: Needs separate W signal for burner AND G signal for fan
+- Thermostat Setting: `fanRelayNeeded = true` (in auto mode)
+- Result: Thermostat sends W for heat AND G for fan together
+
+**The Bug Scenario**:
+- User has Example 1 system (modern AC)
+- Sets `fanRelayNeeded = false` (correct)
+- Buggy code: Fan relay STILL goes HIGH during heating (wrong!)
+- Result: Thermostat fan relay interferes with HVAC's fan control, causing:
+  - Fan runs when shouldn't
+  - Possible relay contention
+  - Confusion about what's controlling what
+
+**After Fix**:
+- Same system with `fanRelayNeeded = false`
+- Fixed code: Fan relay stays LOW during heating (correct!)
+- Thermostat doesn't touch fan, HVAC has full control
+- System works as intended
+
+### Debugging Guide
+
+**"Fan comes on unexpectedly"**:
+1. Check thermostat mode and fan mode settings
+2. If in "auto" mode, check `fanRelayNeeded` setting
+3. If false, verify no heating/cooling is active
+4. Serial debug: Look for "Fan activated with heat/cool" messages
+
+**"System doesn't heat/cool"**:
+1. Check mode is set to "heat", "cool", or "auto"
+2. Check temperature is outside setpoint ± swing range
+3. Serial debug: Look for relay activation messages
+4. Check relay connections to HVAC equipment
+
+**"Temperature won't stabilize"**:
+1. Adjust `tempSwing` hysteresis value (try 1.5-2.0°F)
+2. Check sensor isn't in draft or near heat source
+3. Verify building insulation adequate
+
