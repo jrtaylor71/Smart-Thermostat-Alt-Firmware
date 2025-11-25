@@ -2442,16 +2442,30 @@ void activateCooling()
 
 void handleFanControl()
 {
+    bool newFanState = fanOn;  // Default: keep current state
+    
     if (fanMode == "on")
     {
-        digitalWrite(fanRelayPin, HIGH);
-        fanOn = true;
+        newFanState = true;  // Always on
     }
-    else if (fanMode == "auto" && !heatingOn && !coolingOn)
+    else if (fanMode == "auto")
     {
-        digitalWrite(fanRelayPin, LOW);
-        fanOn = false;
+        // Auto mode: fan only runs with heating/cooling
+        newFanState = (heatingOn || coolingOn);
     }
+    else if (fanMode == "cycle")
+    {
+        // Cycle mode: handled by controlFanSchedule(), don't override here
+        return;
+    }
+    
+    // Only write GPIO if state actually changed (state guard)
+    if (newFanState != fanOn) {
+        digitalWrite(fanRelayPin, newFanState ? HIGH : LOW);
+        fanOn = newFanState;
+        Serial.printf("[FAN] Fan state changed via handleFanControl: %s\n", fanOn ? "ON" : "OFF");
+    }
+    
     setDisplayUpdateFlag(); // Option C: Request display update
 }
 
@@ -2469,43 +2483,58 @@ void controlFanSchedule()
 
     if (fanMode == "cycle")
     {
+        // Don't run cycle schedule if heating or cooling is active
+        if (heatingOn || coolingOn) {
+            if (!fanRelayNeeded && fanOn) {
+                digitalWrite(fanRelayPin, LOW);
+                fanOn = false;
+                Serial.println("[FAN SCHEDULE] Stopping fan - heating/cooling active, fanRelayNeeded=false");
+            }
+            return;
+        }
+
         unsigned long currentTime = millis();
         unsigned long elapsedTime = (currentTime - lastFanRunTime) / 1000; // Convert to seconds
+        unsigned long hourElapsed = elapsedTime % SECONDS_PER_HOUR;
 
-        // Calculate the duration in seconds the fan should run per hour
-        unsigned long fanRunSecondsPerHour = fanMinutesPerHour * 60;
-
-        // If an hour has passed, reset the fan run duration
+        // If an hour has passed, reset the cycle
         if (elapsedTime >= SECONDS_PER_HOUR)
         {
             lastFanRunTime = currentTime;
-            fanRunDuration = 0;
+            hourElapsed = 0;
         }
 
-        // Run the fan based on the schedule
-        if (fanRunDuration < fanRunSecondsPerHour)
-        {
-            digitalWrite(fanRelayPin, HIGH);
-            fanOn = true;
+        // Calculate which 5-minute increment we're in (0-11)
+        // fanMinutesPerHour determines how many 5-min increments to run
+        // Example: 15 minutes = 3 increments of 5 minutes
+        unsigned long totalIncrements = (fanMinutesPerHour / 5);
+        unsigned long currentIncrement = (hourElapsed / 300);  // 300 seconds = 5 minutes
+        
+        // Validate totalIncrements (max 12 for 60 minutes)
+        if (totalIncrements > 12) {
+            totalIncrements = 12;  // Cap at 60 minutes
         }
-        else
-        {
-            digitalWrite(fanRelayPin, LOW);
-            fanOn = false;
+        if (totalIncrements == 0) {
+            totalIncrements = 1;  // Minimum 1 increment (5 minutes)
         }
+
+        // Fan should run during first N increments, then off for remainder
+        bool shouldRun = (currentIncrement < totalIncrements);
+        
+        // Only write GPIO if state actually changed
+        if (shouldRun != fanOn) {
+            digitalWrite(fanRelayPin, shouldRun ? HIGH : LOW);
+            fanOn = shouldRun;
+            Serial.printf("[FAN SCHEDULE] Cycle mode: increment %lu/%lu, fan %s\n", 
+                         currentIncrement, totalIncrements, fanOn ? "ON" : "OFF");
+        }
+        
         updateStatusLEDs(); // Update LED status
-
-        // Update the fan run duration
-        if (fanOn)
-        {
-            fanRunDuration += elapsedTime;
-        }
     }
     // Retain auto mode for backward compatibility
     else if (fanMode == "auto")
     {
-        // No scheduled fan running in auto mode
-        // Optionally, you could keep the old schedule logic here if desired
+        // No scheduled fan running in auto mode - handled by handleFanControl()
     }
 }
 
