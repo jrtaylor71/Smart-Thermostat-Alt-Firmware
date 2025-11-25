@@ -2390,6 +2390,13 @@ void activateHeating() {
             fanOn = true;
             Serial.println("Fan activated with heat");
         }
+    } else {
+        // HVAC controls its own fan, turn ours off
+        if (fanOn) {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+            Serial.println("Fan turned off during heat - HVAC controls fan");
+        }
     }
     updateStatusLEDs(); // Update LED status
     setDisplayUpdateFlag(); // Option C: Request display update
@@ -2435,6 +2442,13 @@ void activateCooling()
             fanOn = true;
             Serial.println("Fan activated with cooling");
         }
+    } else {
+        // HVAC controls its own fan, turn ours off
+        if (fanOn) {
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+            Serial.println("Fan turned off during cool - HVAC controls fan");
+        }
     }
     updateStatusLEDs(); // Update LED status
     setDisplayUpdateFlag(); // Option C: Request display update
@@ -2450,8 +2464,13 @@ void handleFanControl()
     }
     else if (fanMode == "auto")
     {
-        // Auto mode: fan only runs with heating/cooling
-        newFanState = (heatingOn || coolingOn);
+        // Auto mode: fan only runs with heating/cooling if fanRelayNeeded is true
+        // If fanRelayNeeded is false, HVAC controls the fan
+        if (fanRelayNeeded) {
+            newFanState = (heatingOn || coolingOn);
+        } else {
+            newFanState = false;  // Don't control fan - HVAC system controls it
+        }
     }
     else if (fanMode == "cycle")
     {
