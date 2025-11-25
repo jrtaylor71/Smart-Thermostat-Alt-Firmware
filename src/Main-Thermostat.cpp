@@ -358,6 +358,7 @@ float previousTemp = 0.0;
 float previousHumidity = 0.0;
 float previousSetTemp = 0.0;
 bool firstHourAfterBoot = true; // Flag to track the first hour after bootup
+volatile bool mqttFeedbackNeeded = false; // Flag for immediate MQTT feedback on settings change
 
 // Sensor reading task (runs on core 1)
 void sensorTaskFunction(void *parameter) {
@@ -1078,6 +1079,15 @@ void loop()
             lastMQTTAttemptTime = currentTime;
         }
         mqttClient.loop();
+        
+        // Send MQTT feedback immediately if settings changed via MQTT
+        if (mqttFeedbackNeeded && mqttClient.connected()) {
+            Serial.println("[MQTT] Sending immediate feedback for settings change");
+            sendMQTTData();
+            mqttFeedbackNeeded = false;
+            lastMQTTDataTime = currentTime;
+        }
+        
         // Send MQTT data only every 10 seconds instead of every loop
         if (currentTime - lastMQTTDataTime > 10000) {
             sendMQTTData();
@@ -1898,6 +1908,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
         saveSettings();
         // Update display immediately when settings change via MQTT
         updateDisplay(currentTemp, currentHumidity);
+        
+        // Set flag for immediate MQTT feedback to Home Assistant
+        mqttFeedbackNeeded = true;
     }
 
     // Clear the handling flag
