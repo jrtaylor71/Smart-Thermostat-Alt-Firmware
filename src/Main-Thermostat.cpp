@@ -416,6 +416,11 @@ void displayUpdateTaskFunction(void* parameter) {
                           (currentTime - displayIndicators.lastUpdate > displayUpdateInterval);
             
             if (updateNeeded) {
+                if (displayUpdateRequired) {
+                    Serial.println("[DISPLAY_TASK] Flag-triggered update");
+                } else {
+                    Serial.println("[DISPLAY_TASK] Timer-triggered update");
+                }
                 displayUpdateRequired = false;  // Clear the flag
                 displayIndicators.lastUpdate = currentTime;
             }
@@ -478,7 +483,9 @@ void setDisplayUpdateFlag() {
     if (xSemaphoreTake(displayUpdateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         displayUpdateRequired = true;
         xSemaphoreGive(displayUpdateMutex);
-        Serial.println("DISPLAY_FLAG: Display update requested");
+        Serial.println("[DISPLAY_FLAG_SET] Display update requested from controlRelays");
+    } else {
+        Serial.println("[DISPLAY_FLAG_FAILED] Could not acquire mutex");
     }
 }
 
@@ -921,7 +928,7 @@ void loop()
     static unsigned long lastFanScheduleTime = 0;
     static unsigned long lastMQTTDataTime = 0;
     static unsigned long lastScheduleCheckTime = 0;
-    const unsigned long displayUpdateInterval = 30000; // Update display every 30 seconds for maximum touch responsiveness
+    const unsigned long displayUpdateInterval = 500; // Update display every 500ms for immediate responsiveness
     const unsigned long sensorReadInterval = 2000;    // Read sensors every 2 seconds
 
     // Check boot button for factory reset
@@ -1048,13 +1055,12 @@ void loop()
         lastScheduleCheckTime = currentTime;
     }
 
-    // Periodic display updates disabled for maximum touch responsiveness
-    // Display updates still happen on button presses for immediate feedback
-    // if (currentTime - lastDisplayUpdateTime > displayUpdateInterval)
-    // {
-    //     updateDisplay(currentTemp, currentHumidity);
-    //     lastDisplayUpdateTime = currentTime;
-    // }
+    // Periodic display updates - now called from main loop for thread safety with TFT library
+    if (currentTime - lastDisplayUpdateTime > displayUpdateInterval)
+    {
+        updateDisplay(currentTemp, currentHumidity);
+        lastDisplayUpdateTime = currentTime;
+    }
 
     // Attempt to connect to WiFi if not connected - check every 30 seconds
     if (WiFi.status() != WL_CONNECTED && currentTime - lastWiFiAttemptTime > 30000)
@@ -2215,14 +2221,17 @@ void controlRelays(float currentTemp)
     // Make sure fan control is applied
     handleFanControl();
     
+    // Detect any state or mode changes to trigger display/LED updates
+    bool stateChanged = (heatingOn != prevHeatingOn || coolingOn != prevCoolingOn || fanOn != prevFanOn);
+    bool modeChanged = (thermostatMode != prevThermostatMode);
+    
     // Only print debug info when there are changes
-    if (heatingOn != prevHeatingOn || coolingOn != prevCoolingOn || fanOn != prevFanOn || 
-        thermostatMode != prevThermostatMode || abs(currentTemp - prevTemp) > 0.5) {
+    if (stateChanged || modeChanged || abs(currentTemp - prevTemp) > 0.5) {
         Serial.printf("controlRelays: mode=%s, temp=%.1f, setHeat=%.1f, setCool=%.1f, setAuto=%.1f, swing=%.1f\n", 
                      thermostatMode.c_str(), currentTemp, setTempHeat, setTempCool, setTempAuto, tempSwing);
         Serial.printf("Relay states: heating=%d, cooling=%d, fan=%d\n", heatingOn, coolingOn, fanOn);
         
-        // CONSOLIDATED UPDATE: Update LEDs and display when relay state changes
+        // CONSOLIDATED UPDATE: Update LEDs and display when relay state or mode changes
         updateStatusLEDs();
         setDisplayUpdateFlag();
         
@@ -3124,10 +3133,10 @@ void updateDisplay(float currentTemp, float currentHumidity)
     static bool prevCoolingStatus = false;
     static bool prevFanStatus = false;
     
-    // Read actual relay states (same logic as LED status)
-    bool heatActive = (digitalRead(heatRelay1Pin) == HIGH) || (digitalRead(heatRelay2Pin) == HIGH);
-    bool coolActive = (digitalRead(coolRelay1Pin) == HIGH) || (digitalRead(coolRelay2Pin) == HIGH);
-    bool fanActive = (digitalRead(fanRelayPin) == HIGH);
+    // Use software state flags instead of GPIO reads for display indicators
+    bool heatActive = heatingOn;
+    bool coolActive = coolingOn;
+    bool fanActive = fanOn;
     
     // Check if status has changed and update only when necessary
     if (heatActive != prevHeatingStatus || coolActive != prevCoolingStatus || fanActive != prevFanStatus)
