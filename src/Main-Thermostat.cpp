@@ -208,7 +208,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.2.0"; // Software version
+const String sw_version = "1.2.1"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -2894,9 +2894,13 @@ void handleWebRequests()
         ESP.restart();
     });
 
+    // OTA DISABLED - AsyncWebServer multipart handler crashes on ESP32-S3
+    // PC 0x40376d6e abort on core 1 - WiFi task incompatibility with Update.write()
+    // Use serial upload via: pio run --target upload
+    
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = "<!DOCTYPE html><html><head><title>OTA Update</title>";
+        String html = "<!DOCTYPE html><html><head><title>OTA Update - DISABLED</title>";
         html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
         html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
         html += ".container{max-width:600px;margin:0 auto;background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}";
@@ -2908,50 +2912,23 @@ void handleWebRequests()
         html += ".progress{display:none;margin:20px 0}";
         html += ".progress-bar{width:100%;height:20px;background:#e0e0e0;border-radius:10px;overflow:hidden}";
         html += ".progress-fill{height:100%;background:#4caf50;width:0%;transition:width 0.3s}</style></head><body>";
-        html += "<div class='container'><h1>📤 Firmware Update</h1>";
-        html += "<p>Select a firmware binary file (.bin) to upload:</p>";
-        html += "<form method='POST' action='/update' enctype='multipart/form-data' id='uploadForm'>";
-        html += "<div class='upload-area'><input type='file' name='update' accept='.bin' required>";
-        html += "<br><button type='submit' class='btn'>Upload Firmware</button></div></form>";
-        html += "<div class='progress' id='progress'><div class='progress-bar'><div class='progress-fill' id='progressFill'></div></div>";
-        html += "<p id='status'>Uploading...</p></div>";
+        html += "<div class='container'><h1>📤 Firmware Update - DISABLED</h1>";
+        html += "<p><strong>OTA updates are currently disabled due to AsyncWebServer incompatibility with ESP32-S3.</strong></p>";
+        html += "<p>To update firmware, use serial upload:</p>";
+        html += "<pre>cd /home/jonnt/Documents/Smart-Thermostat-Alt-Firmware && pio run --target upload</pre>";
+        html += "<p>Root cause: AsyncTCP WiFi task crashes at PC 0x40376d6e during multipart file upload.</p>";
         html += "<p><a href='/'>← Back to Main Page</a></p></div>";
-        html += "<script>document.getElementById('uploadForm').onsubmit=function(){document.getElementById('progress').style.display='block'}</script>";
         html += "</body></html>";
         request->send(200, "text/html", html);
     });
 
     server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
     {
-        if (Update.hasError()) {
-            request->send(500, "text/plain", "Firmware Update Failed!");
-        } else {
-            request->send(200, "text/plain", "Firmware Update Successful! Rebooting...");
-            delay(1000);
-            ESP.restart();
-        }
+        request->send(501, "text/plain", "OTA updates disabled - use serial upload via: pio run --target upload");
     },
     [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
     {
-        static size_t updateSize = 0;
-        if (!index) {
-            Serial.printf("Update Start: %s\n", filename.c_str());
-            if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-                Update.printError(Serial);
-            }
-            updateSize = 0;
-        }
-        if (Update.write(data, len) != len) {
-            Update.printError(Serial);
-        }
-        updateSize += len;
-        if (final) {
-            if (Update.end(true)) {
-                Serial.printf("Update Success: %u bytes\n", updateSize);
-            } else {
-                Update.printError(Serial);
-            }
-        }
+        // OTA POST handler disabled
     });
 
     // Schedule management route (schedule interface is now embedded in main page)
