@@ -48,6 +48,7 @@
 #include <time.h>
 #include <ArduinoJson.h> // Include the ArduinoJson library
 #include <OneWire.h>
+#include <MyLD2410.h> // LD2410 radar library
 #include "WebInterface.h"
 #include "WebPages.h"
 #include <DallasTemperature.h>
@@ -61,8 +62,8 @@ Adafruit_AHTX0 aht;
 #define BOOT_BUTTON 0 // Define the GPIO pin connected to the boot button
 
 // LD2410 Motion Sensor pins
-#define LD2410_RX_PIN 15  // ESP32 RX (connect to LD2410 TX)
-#define LD2410_TX_PIN 16  // ESP32 TX (connect to LD2410 RX)
+#define LD2410_RX_PIN 16  // ESP32 RX (connect to LD2410 TX) - SWAPPED to test physical wiring
+#define LD2410_TX_PIN 15  // ESP32 TX (connect to LD2410 RX) - SWAPPED to test physical wiring
 #define LD2410_MOTION_PIN 18  // Digital motion output pin
 
 // Settings for factory reset
@@ -110,11 +111,22 @@ bool displaySleepEnabled = true; // Enable/disable display sleep mode
 unsigned long displaySleepTimeout = 300000; // Sleep after 5 minutes (300000ms) of inactivity
 bool displayIsAsleep = false; // Current display sleep state
 unsigned long lastInteractionTime = 0; // Last time user interacted with display
+unsigned long lastWakeTime = 0; // Last time display woke from sleep
 
 // Motion sensor variables
+MyLD2410 radar(Serial2);
 bool motionDetected = false;
 unsigned long lastMotionTime = 0;
 bool ld2410Connected = false;
+bool motionWakeEnabled = true; // Disable until sensor configuration verified working (disabled due to false positives)
+unsigned long lastSleepTime = 0; // Last time display went to sleep
+unsigned long radarDataTimestamp = 0; // Timestamp when radar data was last updated by readMotionSensor()
+const unsigned long MOTION_WAKE_COOLDOWN = 5000; // Don't wake from motion for 5 seconds after sleep
+const unsigned long MOTION_WAKE_DEBOUNCE = 2000; // Require 2 seconds of sustained motion to filter brief blips
+const int MOTION_WAKE_MAX_DISTANCE = 100; // Only wake on motion within 100cm (close range only)
+const unsigned long RADAR_DATA_MAX_AGE = 500; // Consider radar data stale after 500ms
+const int MOTION_WAKE_MIN_SIGNAL = 50; // Minimum signal strength - increased to filter noise
+const int MOTION_WAKE_MAX_SIGNAL = 100; // Maximum signal
 
 // Hybrid staging settings
 unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
@@ -208,7 +220,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.2.1"; // Software version
+const String sw_version = "1.2.2"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -316,6 +328,7 @@ void checkDisplaySleep();
 void wakeDisplay();
 void sleepDisplay();
 bool testLD2410Connection();
+bool configureLD2410Sensitivity();
 void readMotionSensor();
 void updateStatusLEDs();
 void setHeatLED(bool state);
@@ -335,8 +348,10 @@ void updateDisplayIndicators();
 void setDisplayUpdateFlag();
 TaskHandle_t displayUpdateTask = NULL;
 bool displayUpdateRequired = false;
-unsigned long displayUpdateInterval = 250; // Update every 250ms
+unsigned long displayUpdateInterval = 500; // Update every 500ms
 SemaphoreHandle_t displayUpdateMutex = NULL;
+SemaphoreHandle_t controlRelaysMutex = NULL;
+SemaphoreHandle_t radarSensorMutex = NULL;
 
 // Display indicator states (managed centrally)
 struct DisplayIndicators {
@@ -731,15 +746,20 @@ void setup()
     // Initialize light sensor pin
     pinMode(LIGHT_SENSOR_PIN, INPUT);
     
-    // Initialize LD2410 motion sensor
-    pinMode(LD2410_MOTION_PIN, INPUT);
-    Serial2.begin(256000, SERIAL_8N1, LD2410_RX_PIN, LD2410_TX_PIN);
-    delay(100);
+    // Initialize LD2410 motion sensor with pulldown to prevent floating
+    pinMode(LD2410_MOTION_PIN, INPUT_PULLDOWN);
+    // NOTE: Arduino Serial2.begin uses (baud, config, RX_pin, TX_pin) order
+    // LD2410 TX (data out) connects to ESP32 RX (pin 15)
+    // LD2410 RX (data in) connects to ESP32 TX (pin 16)
+    Serial2.begin(256000, SERIAL_8N1, LD2410_RX_PIN, LD2410_TX_PIN);  // RX=15, TX=16
+    delay(500); // Give sensor time to stabilize
     
     // Test LD2410 connection
     ld2410Connected = testLD2410Connection();
     if (ld2410Connected) {
         Serial.println("LD2410: Motion sensor connected successfully");
+        // Configure with conservative settings matching original hardware
+        configureLD2410Sensitivity();
     } else {
         Serial.println("LD2410: Motion sensor not detected - display control via touch only");
     }
@@ -927,6 +947,22 @@ void setup()
         Serial.println("Display update mutex created successfully");
     }
     
+    // Create controlRelays mutex for thread-safe relay control
+    controlRelaysMutex = xSemaphoreCreateMutex();
+    if (controlRelaysMutex == NULL) {
+        Serial.println("ERROR: Failed to create controlRelays mutex!");
+    } else {
+        Serial.println("Control relays mutex created successfully");
+    }
+    
+    // Create radar sensor mutex for thread-safe sensor access
+    radarSensorMutex = xSemaphoreCreateMutex();
+    if (radarSensorMutex == NULL) {
+        Serial.println("ERROR: Failed to create radar sensor mutex!");
+    } else {
+        Serial.println("Radar sensor mutex created successfully");
+    }
+    
     xTaskCreatePinnedToCore(
         displayUpdateTaskFunction,  // Task function
         "DisplayUpdateTask",       // Name
@@ -952,7 +988,6 @@ void loop()
     static unsigned long lastFanScheduleTime = 0;
     static unsigned long lastMQTTDataTime = 0;
     static unsigned long lastScheduleCheckTime = 0;
-    const unsigned long displayUpdateInterval = 500; // Update display every 500ms for immediate responsiveness
     const unsigned long sensorReadInterval = 2000;    // Read sensors every 2 seconds
 
     // Check boot button for factory reset
@@ -1012,7 +1047,12 @@ void loop()
         if (displayIsAsleep) {
             wakeDisplay();
             // Don't process touch input when waking from sleep, just wake up
-        } else {
+            // Don't reset interaction time here - wakeDisplay handles it if needed
+        } else if (currentTime - lastWakeTime > 500) {
+            // Display is awake and we're past the wake debounce period
+            // Ignore touches for 500ms after waking to prevent immediate re-sleep
+            lastInteractionTime = millis();
+            
             // Always handle button presses - removed serial debug for maximum speed
             handleButtonPress(x, y);
             
@@ -1021,8 +1061,6 @@ void loop()
                 handleKeyboardTouch(x, y, isUpperCaseKeyboard);
             }
         }
-        
-        lastInteractionTime = millis();
     }
 
     // If in WiFi setup mode, skip the normal display updates and sensor readings
@@ -1072,12 +1110,6 @@ void loop()
 
     // Check if display should go to sleep due to inactivity
     checkDisplaySleep();
-
-    // Check schedule every 30 seconds
-    if (currentTime - lastScheduleCheckTime > 30000) {
-        checkSchedule();
-        lastScheduleCheckTime = currentTime;
-    }
 
     // Periodic display updates - now called from main loop for thread safety with TFT library
     if (currentTime - lastDisplayUpdateTime > displayUpdateInterval)
@@ -2082,6 +2114,12 @@ void sendMQTTData()
 
 void controlRelays(float currentTemp)
 {
+    // Take mutex to prevent concurrent access from multiple cores
+    if (xSemaphoreTake(controlRelaysMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("[WARNING] controlRelays: Failed to acquire mutex, skipping this call");
+        return;
+    }
+    
     // Debug entry
     Serial.printf("[DEBUG] controlRelays ENTRY: mode=%s, temp=%.1f, heatingOn=%d, coolingOn=%d\n", 
                  thermostatMode.c_str(), currentTemp, heatingOn, coolingOn);
@@ -2133,6 +2171,7 @@ void controlRelays(float currentTemp)
         // Note: "cycle" fan mode is handled by controlFanSchedule()
         updateStatusLEDs(); // Update LED status
         
+        xSemaphoreGive(controlRelaysMutex);
         return;
     }
 
@@ -2289,6 +2328,8 @@ void controlRelays(float currentTemp)
     Serial.printf("[DEBUG] controlRelays EXIT: RelayPins H1=%d H2=%d C1=%d C2=%d F=%d | Flags heat=%d cool=%d fan=%d stage1=%d stage2=%d\n", 
                  actualHeat1, actualHeat2, actualCool1, actualCool2, actualFan, 
                  heatingOn, coolingOn, fanOn, stage1Active, stage2Active);
+    
+    xSemaphoreGive(controlRelaysMutex);
 }
 
 void turnOffAllRelays()
@@ -2312,19 +2353,29 @@ void activateHeating() {
     
     // Hydronic boiler safety interlock - prevent heating if boiler water is too cold
     if (hydronicHeatingEnabled && !isnan(hydronicTemp)) {
-        Serial.printf("[DEBUG] Hydronic Safety Check: temp=%.1f, low=%.1f, high=%.1f\n", 
-                     hydronicTemp, hydronicTempLow, hydronicTempHigh);
+        Serial.printf("[DEBUG] Hydronic Safety Check: temp=%.1f, low=%.1f, high=%.1f, lockout=%d\n", 
+                     hydronicTemp, hydronicTempLow, hydronicTempHigh, hydronicLockout);
         
-        // If water temperature is below low threshold, disable heating completely
-        if (hydronicTemp < hydronicTempLow) {
-            Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F below threshold %.1f°F - DISABLING HEATING\n", 
+        // Manage lockout state with hysteresis
+        // Lockout activates at low threshold, clears at high threshold
+        if (hydronicTemp < hydronicTempLow && !hydronicLockout) {
+            hydronicLockout = true;
+            Serial.printf("[LOCKOUT] Hydronic lockout ACTIVATED - temp %.1f°F below %.1f°F\n", 
                          hydronicTemp, hydronicTempLow);
+        } else if (hydronicTemp >= hydronicTempHigh && hydronicLockout) {
+            hydronicLockout = false;
+            Serial.printf("[LOCKOUT] Hydronic lockout CLEARED - temp %.1f°F reached %.1f°F\n", 
+                         hydronicTemp, hydronicTempHigh);
+        }
+        
+        // If in lockout state, prevent heating
+        if (hydronicLockout) {
+            Serial.printf("[LOCKOUT] Hydronic lockout active - waiting for temp to reach %.1f°F (currently %.1f°F)\n", 
+                         hydronicTempHigh, hydronicTemp);
             
-            // Turn off all heating relays immediately
+            // Turn off heating relays
             digitalWrite(heatRelay1Pin, LOW);
             digitalWrite(heatRelay2Pin, LOW);
-            
-            // Reset heating state
             heatingOn = false;
             stage1Active = false;
             stage2Active = false;
@@ -2338,42 +2389,9 @@ void activateHeating() {
                 }
             }
             
-            updateStatusLEDs(); // Update LED to show heating is off
-            setDisplayUpdateFlag(); // Update display
-            return; // Exit - no heating allowed
-        }
-        
-        // Only allow heating to resume when temperature is above high threshold (hysteresis)
-        // This prevents rapid on/off cycling as temperature fluctuates around the low threshold
-        if (hydronicTemp < hydronicTempLow) {
-            if (!hydronicLockout) {
-                hydronicLockout = true;
-                Serial.printf("[LOCKOUT] Hydronic lockout ACTIVATED - temp %.1f°F below %.1f°F\n", 
-                             hydronicTemp, hydronicTempLow);
-            }
-        } else if (hydronicTemp > hydronicTempHigh) {
-            if (hydronicLockout) {
-                Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F above recovery threshold %.1f°F - ENABLING HEATING\n", 
-                             hydronicTemp, hydronicTempHigh);
-                hydronicLockout = false;
-            }
-        }
-        
-        // If still in lockout state, prevent heating
-        if (hydronicLockout) {
-            Serial.printf("[LOCKOUT] Hydronic lockout active - waiting for temp to reach %.1f°F (currently %.1f°F)\n", 
-                         hydronicTempHigh, hydronicTemp);
-            
-            // Turn off heating relays but allow normal state management
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
-            heatingOn = false;
-            stage1Active = false;
-            stage2Active = false;
-            
             updateStatusLEDs();
             setDisplayUpdateFlag();
-            return;
+            return; // Exit - no heating allowed
         }
         
         Serial.printf("[LOCKOUT] Hydronic water temp %.1f°F OK - heating allowed\n", hydronicTemp);
@@ -3038,6 +3056,7 @@ void handleWebRequests()
         }
         
         if (settingsChanged) {
+            scheduleUpdatedFlag = true;
             saveScheduleSettings();
             Serial.println("SCHEDULE: Settings updated via web interface");
         }
@@ -3048,6 +3067,11 @@ void handleWebRequests()
 
 void updateDisplay(float currentTemp, float currentHumidity)
 {
+    // Skip display updates when asleep to prevent flickering
+    if (displayIsAsleep) {
+        return;
+    }
+    
     unsigned long displayStart = millis();
     Serial.printf("[DEBUG] updateDisplay start at %lu\n", displayStart);
     
@@ -3085,11 +3109,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
     // Update temperature and humidity only if they have changed
     if (currentTemp != previousTemp || currentHumidity != previousHumidity)
     {
-        // Clear only the areas that need to be updated
-        tft.fillRect(240, 20, 80, 40, COLOR_BACKGROUND); // Clear temperature area
-        tft.fillRect(240, 60, 80, 40, COLOR_BACKGROUND); // Clear humidity area
-
         // Display temperature and humidity on the right side vertically
+        // Background color in setTextColor will clear as it writes
         tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2); // Adjust text size to fit the display
         tft.setRotation(1); // Set rotation for vertical display
@@ -3117,9 +3138,6 @@ void updateDisplay(float currentTemp, float currentHumidity)
     // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
     if (hydronicHeatingEnabled) {
         if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
-            // Clear hydronic temperature area (now on right side under humidity)
-            tft.fillRect(240, 100, 80, 40, COLOR_BACKGROUND);
-            
             // Display hydronic temperature on right side
             tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
             tft.setTextSize(2);
@@ -3163,9 +3181,6 @@ void updateDisplay(float currentTemp, float currentHumidity)
         float currentSetTemp = (thermostatMode == "heat") ? setTempHeat : (thermostatMode == "cool") ? setTempCool : setTempAuto;
         if (currentSetTemp != previousSetTemp)
         {
-            // Clear only the area that needs to be updated
-            tft.fillRect(60, 100, 200, 40, COLOR_BACKGROUND); // Clear set temperature area
-
             // Display set temperature in the center of the display
             tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
             tft.setTextSize(4);
@@ -3288,8 +3303,8 @@ void saveSettings()
     preferences.putInt("mqttPrt", mqttPort);
     preferences.putString("mqttUsr", mqttUsername);
     preferences.putString("mqttPwd", mqttPassword);
-    preferences.putString("wifiID", wifiSSID);
-    preferences.putString("wifiPwd", wifiPassword);
+    preferences.putString("wifiSSID", wifiSSID);
+    preferences.putString("wifiPassword", wifiPassword);
     preferences.putString("thermoMd", thermostatMode);
     preferences.putString("fanMd", fanMode);
     preferences.putString("tz", timeZone);
@@ -3307,8 +3322,6 @@ void saveSettings()
     preferences.putFloat("humOffset", humidityOffset);
     preferences.putBool("dispSleepEn", displaySleepEnabled);
     preferences.putULong("dispTimeout", displaySleepTimeout);
-    
-    saveWiFiSettings();
     
     // Save schedule settings if flag is set
     if (scheduleUpdatedFlag) {
@@ -3336,8 +3349,8 @@ void loadSettings()
     mqttPort = preferences.getInt("mqttPrt", 1883);
     mqttUsername = preferences.getString("mqttUsr", "mqtt");
     mqttPassword = preferences.getString("mqttPwd", "password");
-    wifiSSID = preferences.getString("wifiID", "");
-    wifiPassword = preferences.getString("wifiPwd", "");
+    wifiSSID = preferences.getString("wifiSSID", "");
+    wifiPassword = preferences.getString("wifiPassword", "");
     thermostatMode = preferences.getString("thermoMd", "off");
     fanMode = preferences.getString("fanMd", "auto");
     timeZone = preferences.getString("tz", "CST6CDT,M3.2.0,M11.1.0");
@@ -3571,6 +3584,11 @@ void setBrightness(int brightness) {
 }
 
 void updateDisplayBrightness() {
+    // Don't adjust brightness when display is asleep
+    if (displayIsAsleep) {
+        return;
+    }
+    
     unsigned long currentTime = millis();
     
     // Only update brightness every BRIGHTNESS_UPDATE_INTERVAL
@@ -3609,14 +3627,109 @@ float getCalibratedHumidity(float rawHumidity) {
 
 // Display sleep mode functions
 void checkDisplaySleep() {
+    // Debug: Always print status every 30 seconds regardless of enabled state
+    static unsigned long lastDebugTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Track sustained motion at function scope so it persists correctly
+    static unsigned long firstMotionTime = 0;
+    static unsigned long lastFilterLog = 0;
+    
+    if (currentTime - lastDebugTime > 30000) {
+        Serial.printf("[SLEEP_DEBUG] Function called - Enabled: %s, Time since touch: %lu ms / timeout: %lu ms, Display asleep: %d\n",
+                      displaySleepEnabled ? "YES" : "NO",
+                      currentTime - lastInteractionTime, displaySleepTimeout, displayIsAsleep);
+        lastDebugTime = currentTime;
+    }
+    
     if (!displaySleepEnabled) {
         return; // Sleep mode disabled
     }
     
-    unsigned long currentTime = millis();
+    // Check for continuous presence while display is asleep (motion wake feature)
+    // Require SUSTAINED motion at close range with moderate signal to filter false positives
+    if (displayIsAsleep && motionWakeEnabled && ld2410Connected) {
+        // Apply cooldown: don't wake immediately after sleeping
+        unsigned long timeSinceSleep = currentTime - lastSleepTime;
+        if (timeSinceSleep < MOTION_WAKE_COOLDOWN) {
+            return; // Still in cooldown
+        }
+        
+        // Use sensor data already updated by readMotionSensor() - NO radar.check() call here
+        // But ONLY use data that's fresh (recently updated)
+        unsigned long dataAge = currentTime - radarDataTimestamp;
+        if (dataAge > RADAR_DATA_MAX_AGE) {
+            // Data is stale, skip this check
+            if (firstMotionTime > 0) {
+                Serial.printf("[MOTION_WAKE] Data too old (%lums), resetting tracker\n", dataAge);
+                firstMotionTime = 0;
+            }
+            return;
+        }
+        
+        // Get latest sensor readings with mutex protection
+        if (radarSensorMutex == NULL || xSemaphoreTake(radarSensorMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+            return; // Can't get mutex, skip this check
+        }
+        
+        // Check for valid moving target using cached data
+        bool validMotion = false;
+        if (radar.movingTargetDetected()) {
+            unsigned long distance = radar.movingTargetDistance();
+            int signal = radar.movingTargetSignal();
+            
+            xSemaphoreGive(radarSensorMutex); // Release mutex immediately after reading
+            
+            // Validate distance and signal
+            if (distance > 0 && distance < MOTION_WAKE_MAX_DISTANCE && 
+                signal >= MOTION_WAKE_MIN_SIGNAL && signal <= MOTION_WAKE_MAX_SIGNAL) {
+                validMotion = true;
+                
+                // Start or continue tracking
+                if (firstMotionTime == 0) {
+                    firstMotionTime = currentTime;
+                    Serial.printf("[MOTION_WAKE] Started tracking: %lucm, signal %d\n", distance, signal);
+                } else {
+                    // Check if sustained long enough
+                    unsigned long duration = currentTime - firstMotionTime;
+                    if (duration >= MOTION_WAKE_DEBOUNCE) {
+                        Serial.printf("[MOTION_WAKE] Sustained %lums: %lucm, signal %d - WAKING\n", 
+                                      duration, distance, signal);
+                        firstMotionTime = 0;
+                        wakeDisplay();
+                        return;
+                    }
+                }
+            } else {
+                // Log why motion was filtered
+                if (currentTime - lastFilterLog > 2000) {
+                    Serial.printf("[MOTION_WAKE] Filtered: %lucm (max %d), signal %d (range %d-%d)\n",
+                                  distance, MOTION_WAKE_MAX_DISTANCE, signal, 
+                                  MOTION_WAKE_MIN_SIGNAL, MOTION_WAKE_MAX_SIGNAL);
+                    lastFilterLog = currentTime;
+                }
+            }
+        } else {
+            xSemaphoreGive(radarSensorMutex); // Release mutex if no moving target
+        }
+        
+        // Reset if motion stopped or invalid
+        if (!validMotion && firstMotionTime > 0) {
+            Serial.println("[MOTION_WAKE] Motion lost - resetting tracker");
+            firstMotionTime = 0;
+        }
+    } else {
+        // Display is awake or motion wake disabled - reset tracker to prevent stale state
+        if (firstMotionTime != 0) {
+            firstMotionTime = 0;
+        }
+    }
+    
+    unsigned long timeSinceInteraction = currentTime - lastInteractionTime;
     
     // Check if display should go to sleep
-    if (!displayIsAsleep && (currentTime - lastInteractionTime > displaySleepTimeout)) {
+    if (!displayIsAsleep && (timeSinceInteraction > displaySleepTimeout)) {
+        Serial.printf("[SLEEP] Display going to sleep after %lu ms\n", timeSinceInteraction);
         sleepDisplay();
     }
 }
@@ -3624,144 +3737,309 @@ void checkDisplaySleep() {
 void wakeDisplay() {
     if (displayIsAsleep) {
         displayIsAsleep = false;
-        // Restore photocell-controlled brightness
+        lastWakeTime = millis();
+        lastInteractionTime = millis();
+        
+        // Just restore the backlight
         updateDisplayBrightness();
-        
-        // Reset previous display values to force complete refresh
-        previousTemp = -999.0;
-        previousHumidity = -999.0;
-        previousSetTemp = -999.0;
-        previousHydronicTemp = -999.0;
-        
-        // Update display with current information
-        updateDisplay(currentTemp, currentHumidity);
     }
 }
 
 void sleepDisplay() {
     if (!displayIsAsleep) {
         displayIsAsleep = true;
-        // Turn display black and turn off backlight completely
-        tft.fillScreen(TFT_BLACK);
-        setBrightness(0); // Turn off backlight completely
+        lastSleepTime = millis(); // Record sleep time for motion wake cooldown
+        // Turn off backlight completely (bypass MIN_BRIGHTNESS constraint)
+        currentBrightness = 0;
+        ledcWrite(PWM_CHANNEL, 0);
     }
 }
 
 // Motion sensor functions
-bool testLD2410Connection() {
-    Serial.println("LD2410: Testing motion sensor connection...");
-    
-    // For LD2410, we'll assume it's connected and let runtime behavior determine if it works
-    // This is because LD2410 sensors often don't respond reliably to detection tests
-    // but work fine for actual motion detection
-    
-    // Test the motion pin - should be stable when no motion
-    pinMode(LD2410_MOTION_PIN, INPUT);
-    delay(100);
-    
-    // Take multiple readings to check for stability
-    bool readings[5];
-    for(int i = 0; i < 5; i++) {
-        readings[i] = digitalRead(LD2410_MOTION_PIN);
+
+// Helper function to wait for UART response
+bool waitForLD2410Response(unsigned long timeoutMs) {
+    unsigned long start = millis();
+    while (millis() - start < timeoutMs) {
+        if (Serial2.available() > 0) {
+            return true;
+        }
         delay(10);
     }
+    return false;
+}
+
+// Configure LD2410 using raw UART commands (bypasses library initialization)
+bool configureLD2410ViaRawUART() {
+    Serial.println("LD2410: Configuring via raw UART commands...");
     
-    // Check if pin readings are consistent (indicates a connected sensor)
-    bool consistent = true;
-    for(int i = 1; i < 5; i++) {
-        if(readings[i] != readings[0]) {
-            consistent = false;
-            break;
-        }
-    }
+    // Clear buffer
+    while (Serial2.available()) Serial2.read();
+    delay(100);
     
-    Serial.printf("LD2410: Motion pin readings: %d %d %d %d %d (consistent: %s)\n", 
-                  readings[0], readings[1], readings[2], readings[3], readings[4],
-                  consistent ? "YES" : "NO");
-    
-    // Try basic UART communication
-    Serial2.flush();
-    while(Serial2.available()) Serial2.read(); // Clear buffer
-    delay(50);
-    
-    // Send a simple command to check UART
-    uint8_t enableCmd[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01};
-    Serial2.write(enableCmd, sizeof(enableCmd));
+    // Enter config mode
+    Serial.println("  Entering config mode...");
+    uint8_t enableConfig[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 
+                               0xFF, 0x00, 0x01, 0x00, 
+                               0x04, 0x03, 0x02, 0x01};
+    Serial2.write(enableConfig, sizeof(enableConfig));
     delay(200);
     
-    bool uartResponse = Serial2.available() > 0;
-    if (uartResponse) {
-        Serial.printf("LD2410: UART response received (%d bytes): ", Serial2.available());
-        while(Serial2.available()) {
-            Serial.printf("%02X ", Serial2.read());
-        }
-        Serial.println();
+    if (waitForLD2410Response(200)) {
+        Serial.println("    ✓ Config mode enabled");
+        // Clear the response
+        while (Serial2.available()) Serial2.read();
     } else {
-        Serial.println("LD2410: No UART response (sensor may still work for motion detection)");
+        Serial.println("    ✗ No config mode response");
+        return false;
     }
     
-    // Be more permissive - assume sensor is connected if pin is stable or UART responds
-    bool connected = consistent || uartResponse;
+    // Set max distance: 4 gates = 3 meters, 5 second timeout
+    Serial.println("  Setting max distance (4 gates = 3m, 5s timeout)...");
+    uint8_t setMaxDist[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x14, 0x00, 
+                             0x60, 0x00, 0x00, 0x00, 
+                             0x04, 0x00, 0x00, 0x00, // Max motion gate
+                             0x04, 0x00, 0x00, 0x00, // Max static gate
+                             0x05, 0x00,             // 5 second timeout
+                             0x04, 0x03, 0x02, 0x01};
+    Serial2.write(setMaxDist, sizeof(setMaxDist));
+    delay(200);
     
-    if(!connected) {
-        Serial.println("LD2410: Forcing connection assumption - sensor may be present but not responding to tests");
-        connected = true; // Force assume connected since user says it's there
+    if (waitForLD2410Response(200)) {
+        Serial.println("    ✓ Max distance set");
+        while (Serial2.available()) Serial2.read();
+    } else {
+        Serial.println("    ✗ No max distance response");
     }
     
-    Serial.printf("LD2410: Sensor assumed %s\n", connected ? "CONNECTED" : "NOT CONNECTED");
-    return connected;
+    // Set sensitivity for each gate (reduce false positives)
+    Serial.println("  Setting sensitivity per gate (Motion=30, Static=20)...");
+    for (uint8_t gate = 0; gate <= 4; gate++) {
+        uint8_t setSensitivity[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x14, 0x00,
+                                     0x64, 0x00, 0x00, 0x00,
+                                     gate, 0x00, 0x00, 0x00,  // Gate number
+                                     0x1E, 0x00, 0x00, 0x00,  // Motion: 30
+                                     0x14, 0x00, 0x00, 0x00,  // Static: 20
+                                     0x04, 0x03, 0x02, 0x01};
+        Serial2.write(setSensitivity, sizeof(setSensitivity));
+        delay(100);
+        
+        if (waitForLD2410Response(100)) {
+            Serial.printf("    ✓ Gate %d configured\n", gate);
+            while (Serial2.available()) Serial2.read();
+        }
+    }
+    
+    // Exit config mode
+    Serial.println("  Exiting config mode...");
+    uint8_t endConfig[] = {0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00, 
+                            0xFE, 0x00, 
+                            0x04, 0x03, 0x02, 0x01};
+    Serial2.write(endConfig, sizeof(endConfig));
+    delay(500);
+    
+    Serial.println("LD2410: Raw UART configuration complete");
+    return true;
+}
+
+bool configureLD2410Sensitivity() {
+    Serial.println("LD2410: Configuring sensor sensitivity...");
+    
+    // Enter configuration mode
+    if (!radar.configMode()) {
+        Serial.println("  ✗ Failed to enter config mode");
+        return false;
+    }
+    
+    // Read current configuration
+    radar.requestParameters();
+    Serial.println("  Current configuration:");
+    Serial.printf("    Max range: %lu cm\n", radar.getRange_cm());
+    Serial.printf("    No-one window: %d seconds\n", radar.getNoOneWindow());
+    
+    // Set conservative parameters to reduce false positives:
+    // - Max gate 4 (~3 meters)
+    // - Moving threshold: 30 (reduced from default ~50)
+    // - Stationary threshold: 20 (reduced from default ~50)
+    // - No-one window: 5 seconds
+    
+    MyLD2410::ValuesArray movingThresholds, stationaryThresholds;
+    movingThresholds.N = 8;  // 0-8 is 9 gates, so N=8
+    stationaryThresholds.N = 8;
+    
+    // Set reduced sensitivity for all gates
+    for (int i = 0; i <= 8; i++) {
+        movingThresholds.values[i] = (i <= 4) ? 30 : 15;      // Gates 0-4: 30, 5-8: 15
+        stationaryThresholds.values[i] = (i <= 4) ? 20 : 10;  // Gates 0-4: 20, 5-8: 10
+    }
+    
+    Serial.println("  Setting gate parameters...");
+    if (!radar.setGateParameters(movingThresholds, stationaryThresholds, 5)) {
+        Serial.println("  ✗ Failed to set gate parameters");
+        radar.configMode(false);
+        return false;
+    }
+    Serial.println("    ✓ Gate parameters set");
+    
+    // Exit configuration mode
+    radar.configMode(false);
+    
+    Serial.println("LD2410: Configuration complete");
+    return true;
+}
+
+bool testLD2410Connection() {
+    Serial.println("LD2410: Testing motion sensor with MyLD2410 library...");
+    Serial.println("LD2410: UART Debug Info:");
+    Serial.printf("  RX Pin: %d, TX Pin: %d, Baud: 256000\n", LD2410_RX_PIN, LD2410_TX_PIN);
+    Serial.printf("  Serial2 available: %d bytes\n", Serial2.available());
+    
+    // MyLD2410 library handles continuous stream naturally via check() method
+    Serial.println("  Initializing with MyLD2410 library...");
+    
+    if (radar.begin()) {
+        Serial.println("LD2410: ✓ Library initialized!");
+        
+        // Request configuration mode to read firmware
+        radar.configMode();
+        Serial.printf("  Firmware: %s\n", radar.getFirmware().c_str());
+        Serial.printf("  Protocol version: %lu\n", radar.getVersion());
+        radar.configMode(false);
+        
+        // Configure sensor to reduce false positives
+        if (configureLD2410Sensitivity()) {
+            Serial.println("LD2410: ✓ Sensor configured successfully");
+        } else {
+            Serial.println("LD2410: ✗ Warning - configuration may have failed");
+        }
+        
+        return true;
+    } else {
+        Serial.println("LD2410: ✗ Library initialization failed");
+        
+        // Check digital pin as fallback
+        Serial.println("  Checking digital OUT pin as fallback...");
+        pinMode(LD2410_MOTION_PIN, INPUT_PULLDOWN);
+        delay(100);
+        
+        bool readings[5];
+        for(int i = 0; i < 5; i++) {
+            readings[i] = digitalRead(LD2410_MOTION_PIN);
+            delay(10);
+        }
+        
+        Serial.printf("  Digital pin readings: %d %d %d %d %d\n", 
+                      readings[0], readings[1], readings[2], readings[3], readings[4]);
+        
+        Serial.println("  WARNING: Using digital OUT pin only");
+        return false;
+    }
 }
 
 void readMotionSensor() {
     if (!ld2410Connected) return;
     
-    // Read digital motion pin (HIGH = motion detected)
-    bool currentMotion = digitalRead(LD2410_MOTION_PIN) == HIGH;
-    
-    // Debug motion state changes with more detail
-    static bool lastMotionState = false;
-    static unsigned long lastMotionChangeTime = 0;
-    
-    if (currentMotion != lastMotionState) {
-        unsigned long now = millis();
-        Serial.printf("LD2410: Motion %s (pin %d = %s) after %lu ms\n", 
-                      currentMotion ? "DETECTED" : "CLEARED",
-                      LD2410_MOTION_PIN, currentMotion ? "HIGH" : "LOW",
-                      now - lastMotionChangeTime);
-        lastMotionState = currentMotion;
-        lastMotionChangeTime = now;
+    // Acquire mutex for thread-safe radar access
+    if (radarSensorMutex == NULL || xSemaphoreTake(radarSensorMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return; // Can't get mutex, skip this read
     }
     
-    if (currentMotion) {
+    // Check for new data using MyLD2410 library
+    // check() returns DATA when a data frame is received
+    radar.check();
+    
+    // Update timestamp to indicate fresh data
+    radarDataTimestamp = millis();
+    
+    // Check for presence using library's built-in detection
+    bool currentPresence = radar.presenceDetected();
+    
+    // Debug presence state changes with detailed information
+    static bool lastPresenceState = false;
+    static unsigned long lastPresenceChangeTime = 0;
+    
+    if (currentPresence != lastPresenceState) {
+        unsigned long now = millis();
+        Serial.printf("LD2410: Presence %s after %lu ms\n", 
+                      currentPresence ? "DETECTED" : "CLEARED",
+                      now - lastPresenceChangeTime);
+        
+        // Show what type of target was detected
+        if (currentPresence) {
+            if (radar.movingTargetDetected()) {
+                Serial.printf("  Moving target at %lu cm (signal: %d)\n",
+                              radar.movingTargetDistance(),
+                              radar.movingTargetSignal());
+            }
+            if (radar.stationaryTargetDetected()) {
+                Serial.printf("  Stationary target at %lu cm (signal: %d)\n",
+                              radar.stationaryTargetDistance(),
+                              radar.stationaryTargetSignal());
+            }
+            
+            // Wake display on NEW presence detection (state change from NO to YES)
+            // Only wake if MOVING target detected with valid distance/signal to filter false positives
+            // Only if motion wake is enabled and display is asleep
+            if (motionWakeEnabled && displayIsAsleep && radar.movingTargetDetected()) {
+                unsigned long distance = radar.movingTargetDistance();
+                int signal = radar.movingTargetSignal();
+                
+                // Apply same filters as sustained motion wake
+                if (distance > 0 && distance < MOTION_WAKE_MAX_DISTANCE && 
+                    signal >= MOTION_WAKE_MIN_SIGNAL && signal <= MOTION_WAKE_MAX_SIGNAL) {
+                    Serial.printf("LD2410: Waking display - NEW moving target: %lucm, signal %d\n", distance, signal);
+                    wakeDisplay();
+                } else {
+                    Serial.printf("LD2410: Filtered NEW moving target: %lucm (max %d), signal %d (range %d-%d)\n",
+                                  distance, MOTION_WAKE_MAX_DISTANCE, signal, 
+                                  MOTION_WAKE_MIN_SIGNAL, MOTION_WAKE_MAX_SIGNAL);
+                }
+            }
+        }
+        
+        lastPresenceState = currentPresence;
+        lastPresenceChangeTime = now;
+    }
+    
+    if (currentPresence) {
         if (!motionDetected) {
-            Serial.println("LD2410: Motion detection activated - starting motion timer");
+            Serial.println("LD2410: Presence activated - starting presence timer");
         }
         motionDetected = true;
         lastMotionTime = millis();
-        lastInteractionTime = millis(); // Update interaction time for display sleep
-        
-        // Wake display on motion (similar to touch)
-        if (displayIsAsleep) {
-            Serial.println("LD2410: Waking display due to motion detection");
-            wakeDisplay();
-        }
     } else {
-        // Handle motion timeout (30 seconds)
-        if (millis() - lastMotionTime > 30000 && motionDetected) {
-            Serial.println("LD2410: Motion timeout (30s) - clearing motion flag");
+        // Presence cleared by sensor's internal timeout (configured in no-one window parameter)
+        if (motionDetected) {
+            Serial.println("LD2410: Presence timeout - clearing motion flag");
             motionDetected = false;
         }
     }
     
-    // Periodic motion pin status (every 10 seconds when in debug mode)
+    // Periodic status (every 10 seconds)
     static unsigned long lastDebugTime = 0;
     if (millis() - lastDebugTime > 10000) {
         lastDebugTime = millis();
-        Serial.printf("LD2410: Status - Pin: %s, Motion Flag: %s, Last Motion: %lu ms ago\n",
-                      currentMotion ? "HIGH" : "LOW",
+        Serial.printf("LD2410: Presence=%s, Motion Flag=%s, Age=%lu ms\n",
+                      currentPresence ? "YES" : "NO",
                       motionDetected ? "ACTIVE" : "INACTIVE",
                       millis() - lastMotionTime);
+        
+        // Show target details if present
+        if (currentPresence) {
+            if (radar.movingTargetDetected()) {
+                Serial.printf("  Moving: %lucm @ signal %d\n",
+                              radar.movingTargetDistance(),
+                              radar.movingTargetSignal());
+            }
+            if (radar.stationaryTargetDetected()) {
+                Serial.printf("  Stationary: %lucm @ signal %d\n",
+                              radar.stationaryTargetDistance(),
+                              radar.stationaryTargetSignal());
+            }
+        }
     }
+    
+    xSemaphoreGive(radarSensorMutex); // Release mutex
 }
 
 // LED control functions
