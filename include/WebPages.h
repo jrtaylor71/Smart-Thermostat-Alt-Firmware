@@ -19,6 +19,32 @@ struct DaySchedule {
     bool enabled;          // Whether scheduling is enabled for this day
 };
 
+// Format uptime in human-readable format
+String formatUptime(unsigned long milliseconds) {
+    unsigned long seconds = milliseconds / 1000;
+    unsigned long minutes = seconds / 60;
+    unsigned long hours = minutes / 60;
+    unsigned long days = hours / 24;
+    
+    seconds %= 60;
+    minutes %= 60;
+    hours %= 24;
+    
+    String uptime = "";
+    if (days > 0) {
+        uptime += String(days) + "d ";
+    }
+    if (hours > 0 || days > 0) {
+        uptime += String(hours) + "h ";
+    }
+    if (minutes > 0 || hours > 0 || days > 0) {
+        uptime += String(minutes) + "m ";
+    }
+    uptime += String(seconds) + "s";
+    
+    return uptime;
+}
+
 // Generate modern status page HTML
 String generateStatusPage(float currentTemp, float currentHumidity, float hydronicTemp, 
                          String thermostatMode, String fanMode, String version_info, 
@@ -592,7 +618,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "<p><strong>IP Address:</strong> " + WiFi.localIP().toString() + "</p>";
     html += "<p><strong>MAC Address:</strong> " + WiFi.macAddress() + "</p>";
     html += "<p><strong>Free Heap:</strong> " + String(ESP.getFreeHeap()) + " bytes</p>";
-    html += "<p><strong>Uptime:</strong> " + String(millis() / 1000) + " seconds</p>";
+    html += "<p><strong>Uptime:</strong> " + formatUptime(millis()) + "</p>";
     html += "<p><strong>Flash Size:</strong> " + String(ESP.getFlashChipSize() / 1024 / 1024) + " MB</p>";
     html += "<p><strong>Chip Model:</strong> " + String(ESP.getChipModel()) + "</p>";
     html += "<p><strong>CPU Frequency:</strong> " + String(ESP.getCpuFreqMHz()) + " MHz</p>";
