@@ -53,6 +53,7 @@
 #include "WebPages.h"
 #include <DallasTemperature.h>
 #include <Update.h> // For OTA firmware update
+#include "esp_heap_caps.h" // Heap diagnostics
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
@@ -197,7 +198,6 @@ float setTempCool = 76.0; // Default set temperature for cooling in Fahrenheit
 float setTempAuto = 74.0; // Default set temperature for auto mode
 float tempSwing = 1.0;
 float autoTempSwing = 3.0;
-bool autoChangeover = true;
 bool fanRelayNeeded = false;
 bool useFahrenheit = true; // Default to Fahrenheit
 bool mqttEnabled = false; // Default to MQTT disabled
@@ -352,6 +352,10 @@ unsigned long displayUpdateInterval = 500; // Update every 500ms
 SemaphoreHandle_t displayUpdateMutex = NULL;
 SemaphoreHandle_t controlRelaysMutex = NULL;
 SemaphoreHandle_t radarSensorMutex = NULL;
+SemaphoreHandle_t i2cMutex = NULL; // Protect I2C bus access (AHT20 sensor)
+
+// Diagnostics
+void logRuntimeDiagnostics();
 
 // Display indicator states (managed centrally)
 struct DisplayIndicators {
@@ -384,10 +388,54 @@ bool firstSensorReading = true;        // Flag to initialize filters on first re
 
 // Sensor reading task (runs on core 1)
 void sensorTaskFunction(void *parameter) {
+    unsigned long lastI2CError = 0;
+    const unsigned long I2C_ERROR_COOLDOWN = 30000; // 30 second cooldown between reinits
+    
     for (;;) {
         // Read AHT20 sensor every 60 seconds to minimize processing load
         sensors_event_t humidity, temp;
-        aht.getEvent(&humidity, &temp);
+        
+        // Acquire I2C mutex with timeout
+        if (i2cMutex == NULL || xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            Serial.println("[SENSOR] Failed to acquire I2C mutex, skipping read");
+            vTaskDelay(pdMS_TO_TICKS(60000));
+            continue;
+        }
+        
+        // Try to read sensor
+        bool readSuccess = false;
+        if (aht.getEvent(&humidity, &temp)) {
+            float rawTemp = temp.temperature;
+            float rawHumidity = humidity.relative_humidity;
+            readSuccess = true;
+            xSemaphoreGive(i2cMutex);
+        } else {
+            xSemaphoreGive(i2cMutex);
+            Serial.println("[SENSOR] AHT20 read failed!");
+            
+            // Try to reinitialize if cooldown has passed
+            unsigned long now = millis();
+            if (now - lastI2CError > I2C_ERROR_COOLDOWN) {
+                Serial.println("[SENSOR] Attempting AHT20 reinit...");
+                if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    if (aht.begin()) {
+                        Serial.println("[SENSOR] AHT20 reinitialized successfully");
+                    } else {
+                        Serial.println("[SENSOR] AHT20 reinit failed");
+                    }
+                    xSemaphoreGive(i2cMutex);
+                }
+                lastI2CError = now;
+            }
+            vTaskDelay(pdMS_TO_TICKS(60000));
+            continue;
+        }
+        
+        if (!readSuccess) {
+            vTaskDelay(pdMS_TO_TICKS(60000));
+            continue;
+        }
+        
         float rawTemp = temp.temperature;
         float rawHumidity = humidity.relative_humidity;
         
@@ -963,6 +1011,14 @@ void setup()
         Serial.println("Radar sensor mutex created successfully");
     }
     
+    // Create I2C mutex for thread-safe I2C bus access
+    i2cMutex = xSemaphoreCreateMutex();
+    if (i2cMutex == NULL) {
+        Serial.println("ERROR: Failed to create I2C mutex!");
+    } else {
+        Serial.println("I2C mutex created successfully");
+    }
+    
     xTaskCreatePinnedToCore(
         displayUpdateTaskFunction,  // Task function
         "DisplayUpdateTask",       // Name
@@ -988,6 +1044,7 @@ void loop()
     static unsigned long lastFanScheduleTime = 0;
     static unsigned long lastMQTTDataTime = 0;
     static unsigned long lastScheduleCheckTime = 0;
+    static unsigned long lastDiagLogTime = 0;
     const unsigned long sensorReadInterval = 2000;    // Read sensors every 2 seconds
 
     // Check boot button for factory reset
@@ -1164,8 +1221,31 @@ void loop()
         lastRelayControlTime = currentTime;
     }
 
+    // Periodic diagnostics: heap and stack watermarks
+    if (currentTime - lastDiagLogTime > 30000) { // every 30 seconds
+        logRuntimeDiagnostics();
+        lastDiagLogTime = currentTime;
+    }
+
     // LEDs are updated from state-changing functions (activateHeating, activateCooling, turnOffAllRelays)
     // No need for frequent polling - only update when state actually changes
+}
+
+void logRuntimeDiagnostics() {
+    size_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t largest8 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    size_t minFree8 = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+
+    UBaseType_t mainWatermark = uxTaskGetStackHighWaterMark(NULL);
+    UBaseType_t sensorWatermark = sensorTask ? uxTaskGetStackHighWaterMark(sensorTask) : 0;
+    UBaseType_t displayWatermark = displayUpdateTask ? uxTaskGetStackHighWaterMark(displayUpdateTask) : 0;
+
+    Serial.printf("[DIAG] Heap: free=%uB, largest=%uB, min_free=%uB\n",
+                  (unsigned)free8, (unsigned)largest8, (unsigned)minFree8);
+    Serial.printf("[DIAG] Stack HWM (words): main=%lu, sensor=%lu, display=%lu\n",
+                  (unsigned long)mainWatermark,
+                  (unsigned long)sensorWatermark,
+                  (unsigned long)displayWatermark);
 }
 
 void setupWiFi()
@@ -2608,7 +2688,7 @@ void handleWebRequests()
                                        heatRelay1Pin, heatRelay2Pin, coolRelay1Pin, 
                                        coolRelay2Pin, fanRelayPin,
                                        setTempHeat, setTempCool, setTempAuto,
-                                       tempSwing, autoTempSwing, autoChangeover,
+                                       tempSwing, autoTempSwing,
                                        fanRelayNeeded, stage1MinRuntime, 
                                        stage2TempDelta, fanMinutesPerHour,
                                        stage2HeatingEnabled, stage2CoolingEnabled,
@@ -2668,9 +2748,6 @@ void handleWebRequests()
         }
         if (request->hasParam("autoTempSwing", true)) {
             autoTempSwing = request->getParam("autoTempSwing", true)->value().toFloat();
-        }
-        if (request->hasParam("autoChangeover", true)) {
-            autoChangeover = request->getParam("autoChangeover", true)->value() == "on";
         }
         if (request->hasParam("fanRelayNeeded", true)) {
             fanRelayNeeded = request->getParam("fanRelayNeeded", true)->value() == "on";
@@ -3265,7 +3342,6 @@ void saveSettings()
     Serial.print("setTempAuto: "); Serial.println(setTempAuto);
     Serial.print("tempSwing: "); Serial.println(tempSwing);
     Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
-    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
     Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
     Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
     Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
@@ -3294,7 +3370,6 @@ void saveSettings()
     preferences.putFloat("setAuto", setTempAuto);
     preferences.putFloat("swing", tempSwing);
     preferences.putFloat("autoSwing", autoTempSwing);
-    preferences.putBool("autoChg", autoChangeover);
     preferences.putBool("fanRelay", fanRelayNeeded);
     preferences.putBool("useF", useFahrenheit);
     preferences.putBool("mqttEn", mqttEnabled);
@@ -3340,7 +3415,6 @@ void loadSettings()
     setTempAuto = preferences.getFloat("setAuto", 74.0);
     tempSwing = preferences.getFloat("swing", 1.0);
     autoTempSwing = preferences.getFloat("autoSwing", 1.5);
-    autoChangeover = preferences.getBool("autoChg", true);
     fanRelayNeeded = preferences.getBool("fanRelay", false);
     useFahrenheit = preferences.getBool("useF", true);
     mqttEnabled = preferences.getBool("mqttEn", false);
@@ -3376,7 +3450,6 @@ void loadSettings()
     Serial.print("setTempAuto: "); Serial.println(setTempAuto);
     Serial.print("tempSwing: "); Serial.println(tempSwing);
     Serial.print("autoTempSwing: "); Serial.println(autoTempSwing);
-    Serial.print("autoChangeover: "); Serial.println(autoChangeover);
     Serial.print("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
     Serial.print("useFahrenheit: "); Serial.println(useFahrenheit);
     Serial.print("mqttEnabled: "); Serial.println(mqttEnabled);
@@ -3535,7 +3608,6 @@ void restoreDefaultSettings()
     setTempAuto = 74.0;
     tempSwing = 1.0;
     autoTempSwing = 1.5;
-    autoChangeover = true;
     fanRelayNeeded = false;
     useFahrenheit = true;
     mqttEnabled = false;
@@ -3944,6 +4016,31 @@ void readMotionSensor() {
         return; // Can't get mutex, skip this read
     }
     
+    // Guard against calling into library with an empty/partial UART buffer
+    // Some LD2410 frames can be larger; ensure at least a minimal header is present
+    int uartAvail = Serial2.available();
+    if (uartAvail <= 0) {
+        xSemaphoreGive(radarSensorMutex);
+        return;
+    }
+    // If very few bytes are available, skip processing to avoid misaligned reads
+    if (uartAvail < 8) {
+        xSemaphoreGive(radarSensorMutex);
+        return;
+    }
+    // If buffer seems excessively large, drain some bytes to resync potential desync
+    if (uartAvail > 256) {
+        int toDrain = uartAvail - 128; // leave some data for next pass
+        while (toDrain-- > 0 && Serial2.available() > 0) {
+            (void)Serial2.read();
+        }
+        // Re-check minimal availability after draining
+        if (Serial2.available() < 8) {
+            xSemaphoreGive(radarSensorMutex);
+            return;
+        }
+    }
+
     // Check for new data using MyLD2410 library
     // check() returns DATA when a data frame is received
     radar.check();

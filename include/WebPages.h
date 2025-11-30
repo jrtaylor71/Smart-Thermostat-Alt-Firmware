@@ -27,7 +27,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
                          int coolRelay2Pin, int fanRelayPin,
                          // Settings variables for embedded settings tab
                          float setTempHeat, float setTempCool, float setTempAuto,
-                         float tempSwing, float autoTempSwing, bool autoChangeover,
+                         float tempSwing, float autoTempSwing,
                          bool fanRelayNeeded, unsigned long stage1MinRuntime, 
                          float stage2TempDelta, int fanMinutesPerHour,
                          bool stage2HeatingEnabled, bool stage2CoolingEnabled,
@@ -218,11 +218,6 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "</div>";
     
     html += "</div>"; // End grid
-    
-    html += "<div class='form-checkbox'>";
-    html += "<input type='checkbox' name='autoChangeover' " + String(autoChangeover ? "checked" : "") + ">";
-    html += "<label class='form-label'>Auto Changeover</label>";
-    html += "</div>";
     
     html += "<div class='form-checkbox'>";
     html += "<input type='checkbox' name='fanRelayNeeded' " + String(fanRelayNeeded ? "checked" : "") + ">";

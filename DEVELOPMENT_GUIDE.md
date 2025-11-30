@@ -5,12 +5,13 @@ This guide helps developers understand, modify, and extend the Smart Thermostat 
 ## 🎯 Project Architecture Overview
 
 ### Current Implementation Status
-- **Version**: 1.1.0 (November 2025)
+- **Version**: 1.2.2 (November 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
 - **Display**: ILI9341 320x240 TFT with XPT2046 touch controller
 - **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp), LD2410 (24GHz mmWave motion)
 - **Architecture**: Dual-core FreeRTOS with Option C centralized display management
-- **Memory Usage**: ~3.2MB flash (32.2% utilization with huge_app.csv partition)
+- **Memory Usage**: ~3.2MB flash (32.4% utilization with huge_app.csv partition)
+- **Key Features**: Motion wake on presence, I2C mutex protection, sustained motion tracking with filtering
 
 ## 🎯 Development Environment Setup
 
@@ -536,11 +537,88 @@ The `jlcpcb/` folder contains complete manufacturing files:
 ### Version Management
 ```cpp
 // Update version in code
-String sw_version = "1.0.4";  // Increment for releases
+String sw_version = "1.2.2";  // Increment for releases
 
 // Update in documentation
 // Update in README.md
-// Tag git repository: git tag v1.0.4
+// Tag git repository: git tag v1.2.2
 ```
+
+## 🔍 Recent Development Sessions
+
+### Session: November 29, 2025 - Motion Wake & I2C Crash Fix (v1.2.2)
+
+**Problem**: System crashes after 5-10 minutes of operation, motion wake not functioning properly.
+
+**Root Causes Identified**:
+1. **LD2410 radar concurrent access**: Both `checkDisplaySleep()` and `readMotionSensor()` calling `radar.check()` caused library internal buffer corruption
+2. **I2C bus contention**: AHT20 sensor task and display operations accessing I2C bus simultaneously without synchronization
+3. **Motion wake logic issues**: 
+   - State-change wake triggering on any moving target without filtering
+   - Variable scope bugs causing broken motion tracking
+   - False positives from environmental noise (furniture, walls)
+
+**Solutions Implemented**:
+
+1. **Radar Access Protection**:
+   - Removed `radar.check()` from `checkDisplaySleep()` - only called in `readMotionSensor()` now
+   - Added `radarDataTimestamp` to track data freshness (500ms max age)
+   - `checkDisplaySleep()` now reads cached sensor data with brief mutex locks
+
+2. **I2C Mutex Protection**:
+   ```cpp
+   SemaphoreHandle_t i2cMutex = NULL;  // Protects I2C bus access
+   
+   // In sensorTaskFunction():
+   if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+       if (aht.getEvent(&humidity, &temp)) {
+           // Process sensor data
+       }
+       xSemaphoreGive(i2cMutex);
+   }
+   ```
+   
+3. **AHT20 Error Handling**:
+   - Wrapped sensor reads with error detection
+   - Added automatic reinitialization on failure (30s cooldown)
+   - Continues operation if sensor read fails
+
+4. **Motion Wake Improvements**:
+   - **Sustained motion tracking**: 2-second debounce filters brief environmental blips
+   - **Distance filtering**: Only wake on motion within 100cm (close range)
+   - **Signal strength filtering**: Range 50-100 to reject weak noise and stationary targets
+   - **Data freshness validation**: Skip processing stale radar data
+   - **Dual-path filtering**: Applied filters to both state-change wake AND sustained motion wake
+   - **Variable scope fix**: Moved `firstMotionTime` and `lastFilterLog` to function scope
+
+5. **Motion Wake Constants** (lines ~115-127):
+   ```cpp
+   const unsigned long MOTION_WAKE_COOLDOWN = 5000;     // 5s after sleep
+   const unsigned long MOTION_WAKE_DEBOUNCE = 2000;     // 2s sustained motion
+   const int MOTION_WAKE_MAX_DISTANCE = 100;            // 100cm max range
+   const unsigned long RADAR_DATA_MAX_AGE = 500;        // 500ms data freshness
+   const int MOTION_WAKE_MIN_SIGNAL = 50;               // Min signal strength
+   const int MOTION_WAKE_MAX_SIGNAL = 100;              // Max signal strength
+   ```
+
+**Testing Results**:
+- Motion wake working correctly with hand wave
+- False positives eliminated (stationary targets filtered)
+- Display sleep/wake cycle functioning properly
+- System stable with I2C mutex protection
+
+**Files Modified**:
+- `src/Main-Thermostat.cpp`: Added i2cMutex, improved sensor error handling, motion wake filtering
+
+**Lessons Learned**:
+1. **Thread safety critical**: Concurrent hardware access requires mutex protection even with FreeRTOS tasks
+2. **Library limitations**: LD2410 library cannot handle concurrent `check()` calls - must be called from single location
+3. **Data freshness matters**: Cached sensor data needs timestamp validation
+4. **Variable scope awareness**: Static variables in nested blocks create separate instances
+5. **Filter all paths**: Motion detection with multiple trigger paths needs consistent filtering
+6. **Sustained vs instant**: Environmental noise requires debounce filtering for reliable motion detection
+
+**Known Issues**:
+- None currently - system stable with all fixes applied
 
 This development guide provides the foundation for extending and maintaining the Smart Thermostat Alt Firmware project. Follow these patterns and practices to ensure code quality and system reliability.
