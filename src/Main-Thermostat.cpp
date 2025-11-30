@@ -812,14 +812,27 @@ void setup()
         Serial.println("LD2410: Motion sensor not detected - display control via touch only");
     }
     
+    // Create I2C mutex BEFORE initializing I2C bus and devices
+    i2cMutex = xSemaphoreCreateMutex();
+    if (i2cMutex == NULL) {
+        Serial.println("ERROR: Failed to create I2C mutex!");
+    } else {
+        Serial.println("I2C mutex created successfully");
+    }
+    
     // Initialize I2C for AHT20 sensor (ESP32-S3 pins)
     Wire.begin(36, 35); // SDA=36, SCL=35 per schematic
     
-    // Initialize AHT20 sensor
-    if (!aht.begin()) {
-        Serial.println("Could not find AHT20 sensor!");
+    // Initialize AHT20 sensor with mutex protection
+    if (i2cMutex != NULL && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (!aht.begin()) {
+            Serial.println("Could not find AHT20 sensor!");
+        } else {
+            Serial.println("AHT20 sensor initialized successfully");
+        }
+        xSemaphoreGive(i2cMutex);
     } else {
-        Serial.println("AHT20 sensor initialized successfully");
+        Serial.println("ERROR: Failed to acquire I2C mutex for AHT20 init!");
     }
 
     // Initialize the TFT display
@@ -1009,14 +1022,6 @@ void setup()
         Serial.println("ERROR: Failed to create radar sensor mutex!");
     } else {
         Serial.println("Radar sensor mutex created successfully");
-    }
-    
-    // Create I2C mutex for thread-safe I2C bus access
-    i2cMutex = xSemaphoreCreateMutex();
-    if (i2cMutex == NULL) {
-        Serial.println("ERROR: Failed to create I2C mutex!");
-    } else {
-        Serial.println("I2C mutex created successfully");
     }
     
     xTaskCreatePinnedToCore(
@@ -4028,9 +4033,13 @@ void readMotionSensor() {
         xSemaphoreGive(radarSensorMutex);
         return;
     }
-    // If buffer seems excessively large, drain some bytes to resync potential desync
-    if (uartAvail > 256) {
-        int toDrain = uartAvail - 128; // leave some data for next pass
+    // CRITICAL: MyLD2410 library has buffer overflow bug in readFrame()
+    // inBuf is only 64 bytes (LD2410_BUFFER_SIZE=0x40) but readFrame() doesn't check bounds
+    // If Serial2 buffer has >64 bytes, readFrame() will write past inBuf causing heap corruption
+    // Drain buffer to safe level before calling radar.check()
+    if (uartAvail > 60) {
+        // Leave only ~30 bytes (typical frame size) to prevent overflow
+        int toDrain = uartAvail - 30;
         while (toDrain-- > 0 && Serial2.available() > 0) {
             (void)Serial2.read();
         }
