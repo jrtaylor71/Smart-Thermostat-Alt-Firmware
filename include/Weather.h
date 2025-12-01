@@ -32,7 +32,7 @@ struct WeatherData {
     String description;      // e.g., "clear sky", "light rain"
     int humidity;
     float windSpeed;
-    int iconCode;            // OpenWeatherMap icon code (e.g., 01d, 10n)
+    String iconCode;         // OpenWeatherMap icon code (e.g., "01d", "10n")
     bool valid;              // True if data is valid
     unsigned long lastUpdate; // Timestamp of last successful update
 };
@@ -46,7 +46,7 @@ public:
     
     // Configuration
     void setSource(WeatherSource source);
-    void setOpenWeatherMapConfig(String apiKey, String city, String countryCode);
+    void setOpenWeatherMapConfig(String apiKey, String city, String state, String countryCode);
     void setHomeAssistantConfig(String haUrl, String haToken, String entityId);
     void setUpdateInterval(unsigned long intervalMs);
     void setUseFahrenheit(bool useFahrenheit);
@@ -67,6 +67,7 @@ private:
     WeatherSource _source;
     String _owmApiKey;
     String _owmCity;
+    String _owmState;
     String _owmCountryCode;
     String _haUrl;
     String _haToken;
@@ -78,6 +79,7 @@ private:
     WeatherData _data;
     String _lastError;
     unsigned long _lastUpdateAttempt;
+    bool _forceNextUpdate;
     
     // Private methods
     bool updateFromOpenWeatherMap();

@@ -67,7 +67,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
                          DaySchedule weekSchedule[7], bool scheduleEnabled, String activePeriod,
                          bool scheduleOverride,
                          // Weather variables
-                         int weatherSource, String owmApiKey, String owmCity, String owmCountry,
+                         int weatherSource, String owmApiKey, String owmCity, String owmState, String owmCountry,
                          String haUrl, String haToken, String haEntityId, int weatherUpdateInterval) {
     
     String html = "<!DOCTYPE html><html lang='en'><head>";
@@ -668,7 +668,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     
     // Weather tab content
     html += "<div id='weather-content' class='tab-content content'>";
-    html += "<form action='/weather_set' method='POST'>";
+    html += "<form id='weather-form' action='/set' method='POST'>";
     
     html += "<div class='settings-section'>";
     html += "<h3>⛅ Weather Configuration</h3>";
@@ -694,13 +694,17 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "<input type='text' name='owmApiKey' value='" + owmApiKey + "' class='form-input' placeholder='Enter your OpenWeatherMap API key'>";
     html += "</div>";
     
-    html += "<div style='display: grid; grid-template-columns: 2fr 1fr; gap: 16px;'>";
+    html += "<div style='display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 16px;'>";
     html += "<div class='form-group'>";
     html += "<label class='form-label'>City</label>";
-    html += "<input type='text' name='owmCity' value='" + owmCity + "' class='form-input' placeholder='e.g., London'>";
+    html += "<input type='text' name='owmCity' value='" + owmCity + "' class='form-input' placeholder='e.g., Prairie Farm'>";
     html += "</div>";
     html += "<div class='form-group'>";
-    html += "<label class='form-label'>Country Code</label>";
+    html += "<label class='form-label'>State/Province</label>";
+    html += "<input type='text' name='owmState' value='" + owmState + "' class='form-input' placeholder='e.g., WI'>";
+    html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Country</label>";
     html += "<input type='text' name='owmCountry' value='" + owmCountry + "' class='form-input' placeholder='e.g., US'>";
     html += "</div>";
     html += "</div>";

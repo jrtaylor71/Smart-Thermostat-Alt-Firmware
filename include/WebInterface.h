@@ -743,6 +743,40 @@ function updateWeatherFields(source) {
     }
 }
 
+// Handle weather form submission
+document.addEventListener('DOMContentLoaded', function() {
+    const weatherForm = document.getElementById('weather-form');
+    if (weatherForm) {
+        weatherForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            // Get form data
+            const formData = new FormData(weatherForm);
+            
+            // Convert to URL encoded string
+            const params = new URLSearchParams(formData).toString();
+            
+            // Send AJAX request
+            fetch('/set', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: params
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Show success message
+                alert('Weather settings saved successfully!');
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Failed to save weather settings');
+            });
+        });
+    }
+});
+
 // Handle page visibility for auto-refresh
 document.addEventListener('visibilitychange', function() {
     if (document.hidden) {
