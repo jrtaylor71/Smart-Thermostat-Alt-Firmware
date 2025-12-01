@@ -726,6 +726,23 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
+// Weather source toggle function
+function updateWeatherFields(source) {
+    const owmSettings = document.getElementById('owm-settings');
+    const haSettings = document.getElementById('ha-settings');
+    
+    if (source == '1') {
+        owmSettings.style.display = 'block';
+        haSettings.style.display = 'none';
+    } else if (source == '2') {
+        owmSettings.style.display = 'none';
+        haSettings.style.display = 'block';
+    } else {
+        owmSettings.style.display = 'none';
+        haSettings.style.display = 'none';
+    }
+}
+
 // Handle page visibility for auto-refresh
 document.addEventListener('visibilitychange', function() {
     if (document.hidden) {

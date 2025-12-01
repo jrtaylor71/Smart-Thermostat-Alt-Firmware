@@ -65,7 +65,10 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
                          bool displaySleepEnabled, unsigned long displaySleepTimeout,
                          // Schedule variables for embedded schedule tab
                          DaySchedule weekSchedule[7], bool scheduleEnabled, String activePeriod,
-                         bool scheduleOverride) {
+                         bool scheduleOverride,
+                         // Weather variables
+                         int weatherSource, String owmApiKey, String owmCity, String owmCountry,
+                         String haUrl, String haToken, String haEntityId, int weatherUpdateInterval) {
     
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
@@ -87,6 +90,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "<button class='nav-tab active' onclick='showTab(\"status\")'>Status</button>";
     html += "<button class='nav-tab' onclick='showTab(\"settings\")'>Settings</button>";
     html += "<button class='nav-tab' onclick='showTab(\"schedule\")'>Schedule</button>";
+    html += "<button class='nav-tab' onclick='showTab(\"weather\")'>Weather</button>";
     html += "<button class='nav-tab' onclick='showTab(\"system\")'>System</button>";
     html += "</div>";
     
@@ -661,6 +665,83 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     html += "</div>";
     html += "</div>";
     html += "</div>"; // End system-content tab
+    
+    // Weather tab content
+    html += "<div id='weather-content' class='tab-content content'>";
+    html += "<form action='/weather_set' method='POST'>";
+    
+    html += "<div class='settings-section'>";
+    html += "<h3>⛅ Weather Configuration</h3>";
+    html += "<p style='opacity: 0.7; margin-bottom: 20px;'>Configure weather data source. Only one source can be active at a time.</p>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Weather Source</label>";
+    html += "<select name='weatherSource' class='form-select' onchange='updateWeatherFields(this.value)'>";
+    html += "<option value='0'" + String(weatherSource == 0 ? " selected" : "") + ">Disabled</option>";
+    html += "<option value='1'" + String(weatherSource == 1 ? " selected" : "") + ">OpenWeatherMap</option>";
+    html += "<option value='2'" + String(weatherSource == 2 ? " selected" : "") + ">Home Assistant</option>";
+    html += "</select>";
+    html += "</div>";
+    html += "</div>";
+    
+    // OpenWeatherMap settings
+    html += "<div id='owm-settings' class='settings-section' style='display:" + String(weatherSource == 1 ? "block" : "none") + "'>";
+    html += "<h3>☁️ OpenWeatherMap Settings</h3>";
+    html += "<p style='opacity: 0.7; margin-bottom: 20px;'>Get your free API key at <a href='https://openweathermap.org/api' target='_blank'>openweathermap.org</a></p>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>API Key</label>";
+    html += "<input type='text' name='owmApiKey' value='" + owmApiKey + "' class='form-input' placeholder='Enter your OpenWeatherMap API key'>";
+    html += "</div>";
+    
+    html += "<div style='display: grid; grid-template-columns: 2fr 1fr; gap: 16px;'>";
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>City</label>";
+    html += "<input type='text' name='owmCity' value='" + owmCity + "' class='form-input' placeholder='e.g., London'>";
+    html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Country Code</label>";
+    html += "<input type='text' name='owmCountry' value='" + owmCountry + "' class='form-input' placeholder='e.g., US'>";
+    html += "</div>";
+    html += "</div>";
+    html += "</div>";
+    
+    // Home Assistant settings
+    html += "<div id='ha-settings' class='settings-section' style='display:" + String(weatherSource == 2 ? "block" : "none") + "'>";
+    html += "<h3>🏠 Home Assistant Settings</h3>";
+    html += "<p style='opacity: 0.7; margin-bottom: 20px;'>Configure Home Assistant weather entity integration</p>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Home Assistant URL</label>";
+    html += "<input type='text' name='haUrl' value='" + haUrl + "' class='form-input' placeholder='http://192.168.1.100:8123'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Long-Lived Access Token</label>";
+    html += "<input type='password' name='haToken' value='" + haToken + "' class='form-input' placeholder='Generate in HA Profile'>";
+    html += "</div>";
+    
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Weather Entity ID</label>";
+    html += "<input type='text' name='haEntityId' value='" + haEntityId + "' class='form-input' placeholder='weather.home'>";
+    html += "</div>";
+    html += "</div>";
+    
+    // Common settings
+    html += "<div class='settings-section'>";
+    html += "<h3>⚙️ Update Settings</h3>";
+    html += "<div class='form-group'>";
+    html += "<label class='form-label'>Update Interval (minutes)</label>";
+    html += "<input type='number' name='weatherUpdateInterval' value='" + String(weatherUpdateInterval) + "' min='5' max='60' class='form-input'>";
+    html += "<small style='opacity: 0.7;'>How often to fetch weather data (5-60 minutes)</small>";
+    html += "</div>";
+    html += "</div>";
+    
+    html += "<div class='button-group' style='padding: 16px;'>";
+    html += "<button type='submit' class='btn btn-primary'>💾 Save Weather Settings</button>";
+    html += "</div>";
+    html += "</form>";
+    html += "</div>"; // End weather-content tab
     
     html += "</div>"; // End container
     html += JAVASCRIPT_CODE;

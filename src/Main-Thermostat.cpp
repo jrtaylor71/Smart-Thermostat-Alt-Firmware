@@ -54,6 +54,7 @@
 #include <DallasTemperature.h>
 #include <Update.h> // For OTA firmware update
 #include "esp_heap_caps.h" // Heap diagnostics
+#include "Weather.h" // Weather integration module
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
@@ -128,6 +129,17 @@ const int MOTION_WAKE_MAX_DISTANCE = 100; // Only wake on motion within 100cm (c
 const unsigned long RADAR_DATA_MAX_AGE = 500; // Consider radar data stale after 500ms
 const int MOTION_WAKE_MIN_SIGNAL = 50; // Minimum signal strength - increased to filter noise
 const int MOTION_WAKE_MAX_SIGNAL = 100; // Maximum signal
+
+// Weather integration settings
+int weatherSource = 0; // 0=disabled, 1=OpenWeatherMap, 2=HomeAssistant
+String owmApiKey = "";
+String owmCity = "";
+String owmCountry = "";
+String haUrl = "";
+String haToken = "";
+String haEntityId = "";
+int weatherUpdateInterval = 10; // Update interval in minutes (default 10)
+Weather weather; // Weather object
 
 // Hybrid staging settings
 unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
@@ -220,7 +232,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.3.0"; // Software version
+const String sw_version = "1.3.1"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -945,6 +957,21 @@ void setup()
                 setupMQTT();
                 reconnectMQTT();
             }
+            
+            // Initialize weather module
+            weather.begin();
+            weather.setUseFahrenheit(useFahrenheit);
+            weather.setSource((WeatherSource)weatherSource);
+            weather.setOpenWeatherMapConfig(owmApiKey, owmCity, owmCountry);
+            weather.setHomeAssistantConfig(haUrl, haToken, haEntityId);
+            weather.setUpdateInterval(weatherUpdateInterval * 60000); // Convert minutes to milliseconds
+            Serial.println("Weather module initialized");
+            
+            // Fetch initial weather data
+            if (weatherSource != 0) {
+                Serial.println("Fetching initial weather data...");
+                weather.update();
+            }
         }
         else
         {
@@ -1158,6 +1185,11 @@ void loop()
     if (currentTime - lastScheduleCheckTime > 60000) {
         checkSchedule();
         lastScheduleCheckTime = currentTime;
+    }
+    
+    // Update weather data if enabled and connected to WiFi
+    if (weatherSource != 0 && WiFi.status() == WL_CONNECTED) {
+        weather.update(); // Will only update if interval has passed
     }
 
     // Update display brightness based on light sensor - check every 1 second
@@ -2739,7 +2771,9 @@ void handleWebRequests()
                                        tempOffset, humidityOffset, currentBrightness,
                                        displaySleepEnabled, displaySleepTimeout,
                                        weekSchedule, scheduleEnabled, activePeriod,
-                                       scheduleOverride);
+                                       scheduleOverride,
+                                       weatherSource, owmApiKey, owmCity, owmCountry,
+                                       haUrl, haToken, haEntityId, weatherUpdateInterval);
         request->send(200, "text/html", html);
     });
 
@@ -3233,6 +3267,72 @@ void handleWebRequests()
         
         request->send(200, "text/plain", "Schedule settings updated!");
     });
+    
+    // Weather configuration handler
+    server.on("/weather_set", HTTP_POST, [](AsyncWebServerRequest *request)
+    {
+        bool settingsChanged = false;
+        
+        if (request->hasParam("weatherSource", true)) {
+            weatherSource = request->getParam("weatherSource", true)->value().toInt();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("owmApiKey", true)) {
+            owmApiKey = request->getParam("owmApiKey", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("owmCity", true)) {
+            owmCity = request->getParam("owmCity", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("owmCountry", true)) {
+            owmCountry = request->getParam("owmCountry", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("haUrl", true)) {
+            haUrl = request->getParam("haUrl", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("haToken", true)) {
+            haToken = request->getParam("haToken", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("haEntityId", true)) {
+            haEntityId = request->getParam("haEntityId", true)->value();
+            settingsChanged = true;
+        }
+        
+        if (request->hasParam("weatherUpdateInterval", true)) {
+            weatherUpdateInterval = request->getParam("weatherUpdateInterval", true)->value().toInt();
+            if (weatherUpdateInterval < 5) weatherUpdateInterval = 5;
+            if (weatherUpdateInterval > 60) weatherUpdateInterval = 60;
+            settingsChanged = true;
+        }
+        
+        if (settingsChanged) {
+            saveSettings();
+            
+            // Reconfigure weather module
+            weather.setUseFahrenheit(useFahrenheit);
+            weather.setSource((WeatherSource)weatherSource);
+            weather.setOpenWeatherMapConfig(owmApiKey, owmCity, owmCountry);
+            weather.setHomeAssistantConfig(haUrl, haToken, haEntityId);
+            weather.setUpdateInterval(weatherUpdateInterval * 60000); // Convert minutes to milliseconds
+            
+            // Force immediate weather update
+            weather.update();
+            
+            Serial.println("WEATHER: Settings updated via web interface");
+        }
+        
+        request->send(200, "text/plain", "Weather settings updated!");
+    });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
@@ -3274,6 +3374,14 @@ void updateDisplay(float currentTemp, float currentHumidity)
     } else {
         unsigned long afterFailedTime = millis();
         Serial.printf("[DEBUG] getLocalTime failed, took %lu ms\n", afterFailedTime - beforeTime);
+    }
+    
+    // Display weather if enabled and data is valid
+    if (weatherSource != 0 && weather.isDataValid()) {
+        weather.displayOnTFT(tft, 5, 25, useFahrenheit);
+    } else if (weatherSource != 0) {
+        // Clear weather area if weather is enabled but data invalid
+        tft.fillRect(5, 25, 110, 40, COLOR_BACKGROUND);
     }
 
     // Update temperature and humidity only if they have changed
@@ -3491,6 +3599,16 @@ void saveSettings()
     preferences.putBool("dispSleepEn", displaySleepEnabled);
     preferences.putULong("dispTimeout", displaySleepTimeout);
     
+    // Save weather settings
+    preferences.putInt("weatherSrc", weatherSource);
+    preferences.putString("owmApiKey", owmApiKey);
+    preferences.putString("owmCity", owmCity);
+    preferences.putString("owmCountry", owmCountry);
+    preferences.putString("haUrl", haUrl);
+    preferences.putString("haToken", haToken);
+    preferences.putString("haEntityId", haEntityId);
+    preferences.putInt("weatherInt", weatherUpdateInterval);
+    
     // Save schedule settings if flag is set
     if (scheduleUpdatedFlag) {
         saveScheduleSettings();
@@ -3535,6 +3653,16 @@ void loadSettings()
     humidityOffset = preferences.getFloat("humOffset", 0.0);
     displaySleepEnabled = preferences.getBool("dispSleepEn", true);
     displaySleepTimeout = preferences.getULong("dispTimeout", 300000); // Default 5 minutes
+    
+    // Load weather settings
+    weatherSource = preferences.getInt("weatherSrc", 0);
+    owmApiKey = preferences.getString("owmApiKey", "");
+    owmCity = preferences.getString("owmCity", "");
+    owmCountry = preferences.getString("owmCountry", "");
+    haUrl = preferences.getString("haUrl", "");
+    haToken = preferences.getString("haToken", "");
+    haEntityId = preferences.getString("haEntityId", "");
+    weatherUpdateInterval = preferences.getInt("weatherInt", 10);
     
     // Debug print to confirm settings are loaded
     Serial.println("Loading settings:");
