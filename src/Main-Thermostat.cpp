@@ -782,7 +782,11 @@ void setup()
     Serial.println("========================================");
     Serial.println("Smart Thermostat Alt Firmware");
     Serial.print("Version: ");
-    Serial.println(version_info);
+    Serial.println(sw_version);
+    Serial.print("Build Date: ");
+    Serial.println(build_date);
+    Serial.print("Build Time: ");
+    Serial.println(build_time);
     Serial.print("Hostname: ");
     Serial.println(hostname);
     Serial.println("========================================");
