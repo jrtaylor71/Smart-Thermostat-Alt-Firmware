@@ -20,4 +20,5 @@ screenlog.*
 touch_*.cpp
 User_Setup.h
 default_*.csv
+!default_16mb.csv
 *-original.*
