@@ -15,10 +15,12 @@ Smart-Thermostat-Alt-Firmware/
 ├── 📄 Thermostat-sch.pdf                # Hardware schematic reference
 │
 ├── 📁 src/                              # Source code directory
-│   └── 📄 Main-Thermostat.cpp          # Main application source (3640+ lines)
+│   ├── 📄 Main-Thermostat.cpp          # Main application source (3640+ lines)
+│   └── 📄 Weather.cpp                  # Weather module implementation with dual API support
 │
 ├── 📁 include/                          # Header files directory
 │   ├── 📄 TFT_Setup_ESP32_S3_Thermostat.h # TFT display configuration (legacy)
+│   ├── 📄 Weather.h                     # Weather module interface with WeatherSource enum
 │   ├── 📄 WebInterface.h                # Modern web interface CSS, icons, and JavaScript
 │   └── 📄 WebPages.h                    # HTML page generation functions
 │
@@ -83,9 +85,17 @@ Smart-Thermostat-Alt-Firmware/
 ### Source Code Architecture
 
 #### `src/Main-Thermostat.cpp` (3640+ lines)
-- Single comprehensive source file containing complete thermostat implementation with 7-day scheduling and LD2410 motion detection
+- Single comprehensive source file containing complete thermostat implementation with 7-day scheduling, LD2410 motion detection, and weather integration
 - Organized into logical function groups with clear separation of concerns
-- **Version**: 1.1.0 with advanced ESP32-S3 dual-core architecture, scheduling system, and motion sensor integration
+- **Version**: 1.3.5 with advanced ESP32-S3 dual-core architecture, scheduling system, motion sensor integration, and weather display
+
+#### `src/Weather.cpp`
+- Weather module implementation with dual API support (OpenWeatherMap and Home Assistant)
+- OpenWeatherMap integration with URL-encoded city names, state field for US disambiguation
+- Home Assistant REST API integration with Bearer token authentication
+- Color-coded weather icon rendering with standard OWM icon codes (01-50)
+- Anti-flicker display optimization with cached redraw logic
+- WeatherData struct with temperature, conditions, humidity, wind, and icon code
 
 **Code Organization:**
 - **Lines 1-50**: Header, license, and hardware credits
@@ -101,6 +111,13 @@ Smart-Thermostat-Alt-Firmware/
 - **Lines 2901-3200**: Settings management, schedule persistence, and preferences
 - **Lines 3201-3400**: Motion sensor functions (testLD2410Connection, readMotionSensor)
 - **Lines 3401-3640+**: Utility functions and hardware abstraction
+
+#### `include/Weather.h`
+- Weather module interface definition with WeatherSource enum (DISABLED, OPENWEATHERMAP, HOMEASSISTANT)
+- WeatherData struct with temperature, high/low, conditions, humidity, wind speed, icon code
+- Weather class with dual API configuration methods and display integration
+- Public methods: begin(), setSource(), setOpenWeatherMapConfig(), setHomeAssistantConfig(), update(), displayOnTFT()
+- Private members: API credentials, update intervals, cached weather data, last error tracking
 
 ### Web Interface Architecture
 
@@ -247,22 +264,25 @@ build_flags =
 ## 📊 Current Project Status
 
 ### Version Information
-- **Firmware Version**: 1.1.0 (November 2025)
+- **Firmware Version**: 1.3.5 (December 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
-- **Code Size**: 3532 lines of production-ready C++ with comprehensive scheduling system
-- **Flash Utilization**: 32.1% (plenty of room for expansion)
+- **Code Size**: 3640+ lines of production-ready C++ with comprehensive scheduling and weather integration
+- **Flash Utilization**: 18.5% (1,210,272 bytes - plenty of room for expansion)
 
 ### Key Features Implemented
+- **Weather Integration**: Modular Weather.h/Weather.cpp with dual-source support (OpenWeatherMap and Home Assistant)
+- **Weather Display**: Color-coded standard OWM icons with temperature, conditions, and high/low on TFT
+- **Anti-Flicker Display**: Cached redraw optimization for time and weather elements
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
 - **LD2410 Motion Sensor Integration**: 24GHz mmWave radar with automatic display wake and robust detection logic
-- **Modern Tabbed Web Interface**: All features embedded in main page - no separate pages, always-visible options
+- **Modern Tabbed Web Interface**: All features embedded in main page including Weather tab - no separate pages, always-visible options
 - **Dual-Core Architecture**: Core 0 (UI/Network), Core 1 (Sensors/Control)
-- **Material Design UI**: Modern, responsive touch interface with scheduling integration
+- **Material Design UI**: Modern, responsive touch interface with scheduling and weather integration
 - **Enhanced Home Assistant Integration**: MQTT auto-discovery with schedule status publishing, motion sensor entities, and comprehensive device grouping
 - **Multi-Stage HVAC**: Advanced heating/cooling with staging support and schedule integration
 - **Schedule MQTT Integration**: Real-time schedule status and override control via MQTT
 - **Motion-Based Display Wake**: Automatic display wake on motion detection with seamless touch integration
-- **Comprehensive Web Configuration**: Tabbed interface with Status, Settings, Schedule, and System tabs
+- **Comprehensive Web Configuration**: Tabbed interface with Status, Settings, Schedule, Weather, and System tabs
 - **Persistent Schedule Storage**: All schedule settings saved to NVS with automatic loading
 - **Enhanced Safety Features**: Improved hydronic [LOCKOUT] system, watchdog timers, and sensor validation
 

@@ -5,13 +5,14 @@ This guide helps developers understand, modify, and extend the Smart Thermostat 
 ## 🎯 Project Architecture Overview
 
 ### Current Implementation Status
-- **Version**: 1.3.0 (November 2025)
+- **Version**: 1.3.5 (December 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
 - **Display**: ILI9341 320x240 TFT with XPT2046 touch controller
 - **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp), LD2410 (24GHz mmWave motion)
+- **Weather**: Dual-source (OpenWeatherMap/Home Assistant) with color-coded standard icons
 - **Architecture**: Dual-core FreeRTOS with Option C centralized display management
-- **Memory Usage**: ~3.2MB flash (32.4% utilization with huge_app.csv partition)
-- **Key Features**: Motion wake on presence, I2C mutex protection, sustained motion tracking with filtering
+- **Memory Usage**: ~3.2MB flash (18.5% utilization = 1,210,272 bytes with huge_app.csv partition)
+- **Key Features**: Weather integration, motion wake on presence, I2C mutex protection, anti-flicker display, sustained motion tracking with filtering
 
 ## 🎯 Development Environment Setup
 

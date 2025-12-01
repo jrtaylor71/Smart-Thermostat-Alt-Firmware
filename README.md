@@ -19,6 +19,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 - **🌡️ Dual Sensors**: AHT20 for ambient conditions + DS18B20 for hydronic systems
 - **⚡ Multi-Stage HVAC**: Support for 2-stage heating and cooling systems
 - **💨 Advanced Fan Control**: Auto, continuous, and scheduled cycling modes
+- **🌤️ Weather Integration**: OpenWeatherMap and Home Assistant weather with color-coded icons on display
 - **🌐 Modern Web Interface**: Complete tabbed interface with embedded scheduling - no separate pages
 - **📡 Offline Operation**: Full functionality without WiFi connection
 - **🔧 Professional PCB**: Custom PCB design for clean, permanent installation
@@ -27,7 +28,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 
 ## 🚀 Quick Start
 
-![Hardware-Main-Display](img/KIMG20251120_183508010.JPG)
+![Hardware-Main-Display](img/KIMG20251201_111834902.JPG)
 
 ### Hardware Requirements
 - ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM) 
@@ -154,15 +155,19 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.3.0 (November 2025)
+**Current Version**: 1.3.5 (December 2025)
+- **Weather Integration**: Dual-source weather support (OpenWeatherMap and Home Assistant)
+- **Weather Display**: Color-coded standard OWM icons with temperature, conditions, and high/low display
+- **Weather Web Interface**: Dedicated weather tab with AJAX form submission
+- **Anti-Flicker Display**: Cached redraw optimization for time and weather elements
+- **Enhanced Time Display**: Improved format "HH:MM Weekday Mon D YYYY" with flicker elimination
+- **Weather Settings**: Configurable update intervals (5-60 minutes) with state field for US cities
 - **Enhanced OTA Updates**: Real-time progress tracking for upload and flash write operations
 - **Improved OTA UX**: Integrated OTA interface in System tab with status messages and reboot timing
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
 - **LD2410 Motion Sensor Integration**: 24GHz mmWave radar for automatic display wake with robust detection
-- **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs
+- **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, Weather, and System tabs
 - **Enhanced MQTT Integration**: Motion sensor auto-discovery and status publishing to Home Assistant
-- **MQTT Alert Improvements**: Non-retained alerts with hysteresis-based reset logic
-- **Hydronic Safety Enhancements**: [LOCKOUT] labels and improved temperature monitoring
 - ESP32-S3-WROM-1-N16 platform with 16MB flash optimization
 - Modern Material Design color scheme with enhanced readability
 - Complete thermostat functionality with Option C display system

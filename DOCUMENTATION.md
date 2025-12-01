@@ -4,14 +4,15 @@
 
 The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32-S3 platform with professional PCB design. This alternative firmware for Stefan Meisner's smart-thermostat hardware provides enhanced features including dual-core architecture, centralized display management, and advanced multi-stage HVAC control.
 
-**Current Version**: 1.3.0 (November 2025)
+**Current Version**: 1.3.5 (December 2025)
 **Hardware**: ESP32-S3-WROOM-1-N16 (16MB Flash)
 **Architecture**: Dual-core FreeRTOS with Option C display management
-**Status**: Production-ready with comprehensive testing, scheduling, and enhanced OTA updates
+**Status**: Production-ready with comprehensive testing, scheduling, weather integration, and enhanced OTA updates
 
 ### Key Features
 
 - **Professional Dual-Core Architecture**: ESP32-S3 FreeRTOS with Core 0 for UI/networking, Core 1 for control
+- **Weather Integration**: Dual-source weather (OpenWeatherMap/Home Assistant) with color-coded standard icons
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods, editable Heat/Cool/Auto temperatures, and MQTT integration
 - **Modern Tabbed Web Interface**: All features embedded in main page - no separate pages, always-visible options
 - **Local Touch Control**: ILI9341 TFT LCD with resistive touch and adaptive brightness
@@ -21,6 +22,7 @@ The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermos
 - **Enhanced Hydronic Safety**: Water temperature monitoring with [LOCKOUT] safety interlocks and improved alerts
 - **Flexible Operation Modes**: Heat, Cool, Auto, and Off with configurable temperature swings
 - **Advanced Fan Control**: Auto, On, and Cycle modes with scheduled operation (minutes per hour)
+- **Anti-Flicker Display**: Cached redraw optimization eliminates time and weather flicker
 - **Comprehensive Web Interface**: Real-time monitoring and complete configuration in tabbed layout
 - **Robust Offline Operation**: Full functionality without WiFi connection
 - **Custom PCB Design**: Professional PCB by Stefan Meisner for clean installation
@@ -105,8 +107,10 @@ const int buzzerPin = 17;       // Buzzer (5V through 2N7002 MOSFET)
 - **TFT_eSPI**: Display control
 - **DHT sensor library**: Temperature/humidity reading
 - **DallasTemperature**: DS18B20 sensor support
-- **ArduinoJson**: JSON parsing for MQTT
+- **ArduinoJson**: JSON parsing for MQTT and weather APIs
+- **HTTPClient**: Weather API requests (OpenWeatherMap)
 - **Preferences**: Non-volatile settings storage
+- **Weather Module**: Custom weather.h/weather.cpp for dual-source weather integration
 
 ### Main Functions
 
@@ -199,6 +203,15 @@ Comprehensive configuration including:
 - Time zone and clock format
 - Fan scheduling parameters
 
+#### Weather Tab (New in v1.3.5)
+Comprehensive weather configuration:
+- **Weather Source Selection**: Choose between OpenWeatherMap, Home Assistant, or Disabled
+- **OpenWeatherMap Settings**: API key, city, state (for US disambiguation), country code
+- **Home Assistant Settings**: Server URL, bearer token, weather entity ID
+- **Update Interval**: Configurable 5-60 minute refresh intervals
+- **AJAX Form Submission**: Settings saved without page redirect
+- **Conditional Sections**: Only show relevant settings for selected weather source
+
 #### Schedule Tab (New in v1.1.0)
 Complete 7-day scheduling system:
 - **Weekly Schedule Table**: 7 days with day/night periods
@@ -230,6 +243,117 @@ Complete 7-day scheduling system:
 - `/update_status`: Real-time OTA progress JSON endpoint
 - `/version`: Firmware version JSON endpoint
 - `/reboot`: System restart endpoint
+
+## Weather Integration (v1.3.5)
+
+### Weather Module Architecture
+
+The weather system is implemented as a separate modular component:
+- **include/Weather.h**: Interface definition with WeatherSource enum and WeatherData struct
+- **src/Weather.cpp**: Implementation with dual API support and display rendering
+
+### Weather Data Structure
+```cpp
+enum WeatherSource {
+    WEATHER_DISABLED = 0,
+    WEATHER_OPENWEATHERMAP = 1,
+    WEATHER_HOMEASSISTANT = 2
+};
+
+struct WeatherData {
+    float temperature;        // Current temperature
+    float tempHigh;          // Daily high
+    float tempLow;           // Daily low
+    String condition;        // Short condition (e.g., "Clear")
+    String description;      // Full description
+    int humidity;            // Humidity percentage
+    float windSpeed;         // Wind speed
+    String iconCode;         // OWM standard icon code (01d-50n)
+    bool valid;              // Data validity flag
+    unsigned long lastUpdate; // Update timestamp
+};
+```
+
+### Supported Weather Sources
+
+#### OpenWeatherMap (Free Tier)
+- **API Endpoint**: Current Weather Data API
+- **Configuration**: API key, city, state (optional for US), country code
+- **Features**: Standard OWM icon codes, temperature, conditions, humidity, wind speed
+- **Update Mechanism**: HTTP GET with JSON parsing, URL-encoded city names
+- **Icon Mapping**: 01=clear, 02=few clouds, 03/04=clouds, 09=shower, 10=rain, 11=storm, 13=snow, 50=mist
+
+#### Home Assistant
+- **API Endpoint**: REST API with entity state queries
+- **Configuration**: Server URL, bearer token, weather entity ID
+- **Features**: Direct integration with HA weather entities
+- **Authentication**: Bearer token in Authorization header
+
+### Display Integration
+
+#### Weather Display Layout
+- **Position**: Top-left at (5, 25) below time header
+- **Temperature**: Large display at (x+10, y+10)
+- **Weather Icon**: 36x36 pixels at (x+110, y) with color-coded rendering
+- **High/Low**: Daily range at (x+10, y+30)
+
+#### Color-Coded Weather Icons
+Standard OpenWeatherMap icon codes with visual color mapping:
+- **01 (Clear)**: Orange sun (0xFD20)
+- **02 (Few Clouds)**: Gray clouds with sun (0xCE79)
+- **03/04 (Clouds)**: Gray clouds (0xCE79)
+- **09 (Shower)**: Blue rain drops (0x3D5F)
+- **10 (Rain)**: Blue rain with cloud (0x3D5F)
+- **11 (Thunderstorm)**: Yellow lightning (0xFC00)
+- **13 (Snow)**: White snowflakes (0xFFFF)
+- **50 (Mist)**: Gray fog lines (0xAD55)
+
+#### Anti-Flicker Optimization
+Weather display uses cached redraw to eliminate flicker:
+- **Cache Variables**: `prevLastUpdate`, `prevUnitsF`, `prevX`, `prevY`
+- **Redraw Trigger**: Only updates when weather data timestamp changes
+- **Benefits**: Smooth display, reduced TFT bus traffic, better responsiveness
+
+### Weather Update Logic
+
+#### Forced First Update
+- `_forceNextUpdate` flag set to `true` in constructor
+- Bypasses interval check on first update attempt
+- Ensures weather displays immediately after configuration
+
+#### Interval-Based Updates
+- Configurable 5-60 minute intervals
+- Respects WiFi connectivity status
+- Automatic retry on API failures with error logging
+
+### Web Interface
+
+#### Weather Tab Features
+- **Weather Source Dropdown**: DISABLED / OpenWeatherMap / Home Assistant
+- **Dynamic Sections**: JavaScript toggles visibility based on source selection
+- **OpenWeatherMap Section**: 3-column grid layout (city 2fr, state 1fr, country 1fr)
+- **AJAX Submission**: Form posts to `/set` endpoint without page redirect
+- **Settings Persistence**: All weather settings saved to ESP32 preferences
+
+### Settings Storage
+
+Weather settings are stored in ESP32 NVS preferences:
+- `weatherSrc`: Weather source (0=disabled, 1=OWM, 2=HA)
+- `owmApiKey`: OpenWeatherMap API key
+- `owmCity`: City name (URL-encoded for API calls)
+- `owmState`: State/province (optional, for US city disambiguation)
+- `owmCountry`: ISO country code (e.g., "US", "CA")
+- `haUrl`: Home Assistant server URL
+- `haToken`: HA long-lived access token
+- `haEntityId`: HA weather entity ID
+- `weatherInt`: Update interval in minutes (5-60)
+
+### Factory Reset
+Factory reset includes weather settings restoration:
+- Weather source set to DISABLED
+- All API keys, URLs, and tokens cleared
+- Update interval reset to 30 minutes
+- State field cleared
 
 ## 7-Day Scheduling System
 
@@ -512,7 +636,19 @@ Located in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
 
 ## Version History
 
-### Version 1.3.0 (Current - November 2025)
+### Version 1.3.5 (Current - December 2025)
+- **Weather Integration**: Modular Weather.h/Weather.cpp with dual-source support
+- **OpenWeatherMap Support**: Free API integration with city, state, country configuration
+- **Home Assistant Weather**: Direct HA weather entity integration via REST API
+- **Weather Display**: Color-coded standard OWM icons (36x36) with temperature and conditions
+- **Weather Web Tab**: Dedicated configuration tab with AJAX form submission
+- **Anti-Flicker Optimization**: Cached redraw for time and weather display elements
+- **Enhanced Time Display**: Format "HH:MM Weekday Mon D YYYY" with flicker elimination
+- **Weather Settings Storage**: Complete settings persistence with state field for US cities
+- **URL Encoding**: Proper handling of city names with spaces and special characters
+- **Icon Color Coding**: Weather-appropriate colors (orange sun, blue rain, white snow, etc.)
+
+### Version 1.3.0 (November 2025)
 - **Enhanced OTA Update System**: Real-time progress tracking for firmware uploads
 - **Flash Write Progress**: Visual feedback during flash write operations with percentage updates
 - **Improved OTA User Experience**: Integrated OTA interface in System tab with clear status messages
