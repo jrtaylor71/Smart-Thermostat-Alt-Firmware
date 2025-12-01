@@ -220,7 +220,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.2.2"; // Software version
+const String sw_version = "1.2.3"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -850,6 +850,8 @@ void setup()
     tft.println("Version: " + sw_version);
     tft.setCursor(25, 135);  // Centered build info
     tft.println("Build: " + build_date);
+    tft.setCursor(40, 155);  // Centered build time
+    tft.println("Time: " + build_time);
     tft.println();
     tft.setTextSize(2);
     delay(5000); // Allow time to read startup info
@@ -2419,16 +2421,37 @@ void controlRelays(float currentTemp)
 
 void turnOffAllRelays()
 {
-    Serial.println("[DEBUG] turnOffAllRelays() - Turning off all relays and resetting flags");
+    Serial.println("[DEBUG] turnOffAllRelays() - Turning off heating/cooling relays");
     digitalWrite(heatRelay1Pin, LOW);
     digitalWrite(heatRelay2Pin, LOW);
     digitalWrite(coolRelay1Pin, LOW);
     digitalWrite(coolRelay2Pin, LOW);
-    digitalWrite(fanRelayPin, LOW);
-    heatingOn = coolingOn = fanOn = false;
+    heatingOn = false;
+    coolingOn = false;
     stage1Active = false; // Reset stage 1 active flag
     stage2Active = false; // Reset stage 2 active flag
-    Serial.printf("[DEBUG] turnOffAllRelays() COMPLETE: heatingOn=%d, coolingOn=%d, fanOn=%d\n", heatingOn, coolingOn, fanOn);
+    
+    // Handle fan based on fanMode setting
+    if (fanMode == "on") {
+        // Keep fan running in "on" mode
+        if (!fanOn) {
+            digitalWrite(fanRelayPin, HIGH);
+            fanOn = true;
+            Serial.println("[DEBUG] turnOffAllRelays() - Keeping fan ON (fanMode=on)");
+        }
+    } else if (fanMode == "auto") {
+        // Turn off fan in auto mode when heating/cooling stops
+        if (fanRelayNeeded) {
+            // Only control fan if fanRelayNeeded is true
+            digitalWrite(fanRelayPin, LOW);
+            fanOn = false;
+            Serial.println("[DEBUG] turnOffAllRelays() - Turning fan OFF (fanMode=auto)");
+        }
+    }
+    // Note: "cycle" mode is handled by controlFanSchedule(), don't interfere
+    
+    Serial.printf("[DEBUG] turnOffAllRelays() COMPLETE: heatingOn=%d, coolingOn=%d, fanOn=%d, fanMode=%s\n", 
+                 heatingOn, coolingOn, fanOn, fanMode.c_str());
     updateStatusLEDs(); // Update LED status
     setDisplayUpdateFlag(); // Option C: Request display update
 }
@@ -3443,7 +3466,7 @@ void loadSettings()
     stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
     stage2HeatingEnabled = preferences.getBool("stg2HeatEn", false);
     stage2CoolingEnabled = preferences.getBool("stg2CoolEn", false);
-    tempOffset = preferences.getFloat("tempOffset", 0.0);
+    tempOffset = preferences.getFloat("tempOffset", -4.0);
     humidityOffset = preferences.getFloat("humOffset", 0.0);
     displaySleepEnabled = preferences.getBool("dispSleepEn", true);
     displaySleepTimeout = preferences.getULong("dispTimeout", 300000); // Default 5 minutes
@@ -3635,7 +3658,7 @@ void restoreDefaultSettings()
     hydronicLowTempAlertSent = false; // Reset hydronic alert state
     stage2HeatingEnabled = false; // Reset stage 2 heating enabled to default
     stage2CoolingEnabled = false; // Reset stage 2 cooling enabled to default
-    tempOffset = 0.0; // Reset temperature calibration offset to default
+    tempOffset = -4.0; // Reset temperature calibration offset to default
     humidityOffset = 0.0; // Reset humidity calibration offset to default
     displaySleepEnabled = true; // Reset display sleep enabled to default
     displaySleepTimeout = 300000; // Reset display sleep timeout to default (5 minutes)
