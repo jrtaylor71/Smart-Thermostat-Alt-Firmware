@@ -220,7 +220,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.2.3"; // Software version
+const String sw_version = "1.2.4"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -385,6 +385,14 @@ float filteredHumidity = 0.0;          // EMA-filtered humidity
 const float tempEMAAlpha = 0.1;        // Temperature smoothing factor (0.1 = 10% new, 90% previous)
 const float humidityEMAAlpha = 0.15;   // Humidity smoothing factor (0.15 = 15% new, 85% previous)
 bool firstSensorReading = true;        // Flag to initialize filters on first read
+
+// OTA progress tracking (server-side fallback)
+volatile size_t otaBytesWritten = 0;      // Bytes written so far during current OTA
+volatile size_t otaTotalSize = 0;         // Total size of firmware being uploaded
+volatile bool otaInProgress = false;      // True while receiving firmware data
+volatile bool otaRebooting = false;       // Set after successful end before reboot
+unsigned long otaStartTime = 0;           // millis() when OTA began
+unsigned long otaLastUpdateLog = 0;       // For throttled serial logging
 
 // Sensor reading task (runs on core 1)
 void sensorTaskFunction(void *parameter) {
@@ -3017,42 +3025,95 @@ void handleWebRequests()
         ESP.restart();
     });
 
-    // OTA DISABLED - AsyncWebServer multipart handler crashes on ESP32-S3
-    // PC 0x40376d6e abort on core 1 - WiFi task incompatibility with Update.write()
-    // Use serial upload via: pio run --target upload
-    
-    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request)
-    {
-        String html = "<!DOCTYPE html><html><head><title>OTA Update - DISABLED</title>";
-        html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-        html += "<style>body{font-family:Arial;margin:40px;background:#f5f5f5}";
-        html += ".container{max-width:600px;margin:0 auto;background:white;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}";
-        html += "h1{color:#1976d2;margin-bottom:20px}";
-        html += ".upload-area{border:2px dashed #ccc;padding:40px;text-align:center;margin:20px 0;border-radius:8px}";
-        html += "input[type=file]{margin:20px 0}";
-        html += ".btn{background:#1976d2;color:white;padding:12px 24px;border:none;border-radius:4px;cursor:pointer;font-size:16px}";
-        html += ".btn:hover{background:#1565c0}";
-        html += ".progress{display:none;margin:20px 0}";
-        html += ".progress-bar{width:100%;height:20px;background:#e0e0e0;border-radius:10px;overflow:hidden}";
-        html += ".progress-fill{height:100%;background:#4caf50;width:0%;transition:width 0.3s}</style></head><body>";
-        html += "<div class='container'><h1>📤 Firmware Update - DISABLED</h1>";
-        html += "<p><strong>OTA updates are currently disabled due to AsyncWebServer incompatibility with ESP32-S3.</strong></p>";
-        html += "<p>To update firmware, use serial upload:</p>";
-        html += "<pre>cd /home/jonnt/Documents/Smart-Thermostat-Alt-Firmware && pio run --target upload</pre>";
-        html += "<p>Root cause: AsyncTCP WiFi task crashes at PC 0x40376d6e during multipart file upload.</p>";
-        html += "<p><a href='/'>← Back to Main Page</a></p></div>";
-        html += "</body></html>";
-        request->send(200, "text/html", html);
+    // OTA status JSON for client-side fallback progress polling
+    server.on("/update_status", HTTP_GET, [](AsyncWebServerRequest *request){
+        String json = "{";
+        json += "\"bytes\":" + String(otaBytesWritten) + ",";
+        json += "\"total\":" + String(otaTotalSize) + ",";
+        if (otaTotalSize > 0) {
+            int pct = (otaBytesWritten * 100) / otaTotalSize;
+            json += "\"percent\":" + String(pct) + ",";
+        }
+        json += "\"state\":\"" + String(otaRebooting ? "rebooting" : (otaInProgress ? "writing" : "idle")) + "\"";
+        if (otaInProgress && otaStartTime) {
+            unsigned long elapsed = millis() - otaStartTime;
+            json += ",\"elapsed_ms\":" + String(elapsed);
+        }
+        json += "}";
+        request->send(200, "application/json", json);
     });
 
-    server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
-    {
-        request->send(501, "text/plain", "OTA updates disabled - use serial upload via: pio run --target upload");
-    },
-    [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
-    {
-        // OTA POST handler disabled
-    });
+    server.on("/update", HTTP_POST, 
+        [](AsyncWebServerRequest *request) {
+            bool updateSuccess = !Update.hasError();
+            otaInProgress = false;
+            if (updateSuccess) {
+                otaRebooting = true;
+                Serial.println("[OTA] Update SUCCESS - sending response and scheduling reboot...");
+                // Send response immediately so client gets it before connection drops
+                AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", "Update successful! Rebooting...");
+                response->addHeader("Connection", "close");
+                request->send(response);
+                // Longer delay to ensure response is fully transmitted before reboot
+                delay(1500);
+                Serial.println("[OTA] Rebooting now...");
+                ESP.restart();
+            } else {
+                otaRebooting = false;
+                String error = "Update failed: ";
+                if (Update.getError() == UPDATE_ERROR_SIZE) error += "File too large";
+                else if (Update.getError() == UPDATE_ERROR_SPACE) error += "Not enough space";
+                else if (Update.getError() == UPDATE_ERROR_MD5) error += "MD5 check failed";
+                else if (Update.getError() == UPDATE_ERROR_MAGIC_BYTE) error += "Invalid firmware file";
+                else error += "Error code " + String(Update.getError());
+                Serial.printf("[OTA] Update FAILED: %s\n", error.c_str());
+                request->send(500, "text/plain", error);
+            }
+        },
+        [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+            if (!index) {
+                Serial.println("\n[OTA] Starting firmware update...");
+                Serial.printf("[OTA] Filename: %s\n", filename.c_str());
+                Serial.printf("[OTA] Free space: %u bytes\n", ESP.getFreeSketchSpace());
+                otaBytesWritten = 0;
+                otaTotalSize = request->contentLength(); // Capture total upload size
+                Serial.printf("[OTA] Total size: %u bytes\n", (unsigned)otaTotalSize);
+                otaInProgress = true;
+                otaRebooting = false;
+                otaStartTime = millis();
+                otaLastUpdateLog = otaStartTime;
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+                    Serial.printf("[OTA] Update.begin() failed: %s\n", Update.errorString());
+                    otaInProgress = false;
+                    return;
+                }
+                Update.setMD5("");
+            }
+            if (len) {
+                size_t written = Update.write(data, len);
+                if (written != len) {
+                    Serial.printf("[OTA] Write error: expected %u bytes, wrote %u bytes\n", len, written);
+                    otaInProgress = false;
+                    return;
+                }
+                otaBytesWritten += written;
+                unsigned long now = millis();
+                if (now - otaLastUpdateLog > 1000) { // Update every second for smoother progress
+                    int pct = otaTotalSize > 0 ? (otaBytesWritten * 100) / otaTotalSize : 0;
+                    Serial.printf("[OTA] Flash write: %u / %u bytes (%d%%)\n", 
+                                  (unsigned)otaBytesWritten, (unsigned)otaTotalSize, pct);
+                    otaLastUpdateLog = now;
+                }
+            }
+            if (final) {
+                if (Update.end(true)) {
+                    Serial.printf("[OTA] Update complete! Total bytes: %u\n", (unsigned)(index + len));
+                } else {
+                    Serial.printf("[OTA] Update.end() failed: %s\n", Update.errorString());
+                }
+            }
+        }
+    );
 
     // Schedule management route (schedule interface is now embedded in main page)
 
