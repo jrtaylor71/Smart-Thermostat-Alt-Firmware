@@ -5,7 +5,7 @@ This guide helps developers understand, modify, and extend the Smart Thermostat 
 ## 🎯 Project Architecture Overview
 
 ### Current Implementation Status
-- **Version**: 1.2.2 (November 2025)
+- **Version**: 1.3.0 (November 2025)
 - **Platform**: ESP32-S3-WROOM-1-N16 (16MB Flash, No PSRAM)
 - **Display**: ILI9341 320x240 TFT with XPT2046 touch controller
 - **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp), LD2410 (24GHz mmWave motion)
@@ -620,5 +620,92 @@ String sw_version = "1.2.2";  // Increment for releases
 
 **Known Issues**:
 - None currently - system stable with all fixes applied
+
+### Session: November 30, 2025 - Enhanced OTA Update System (v1.3.0)
+
+**Objective**: Improve OTA update user experience with real-time progress tracking and proper status messaging.
+
+**Challenges**:
+1. No visual feedback during firmware upload
+2. Page timeout before device finished rebooting
+3. Connection error messages despite successful updates
+4. No visibility into flash write progress
+
+**Solutions Implemented**:
+
+1. **Real-Time Upload Progress**:
+   - XHR-based upload with `onprogress` event tracking
+   - Progress bar showing bytes transferred and ETA
+   - Transfer speed calculation and display
+
+2. **Flash Write Progress Tracking**:
+   - Server-side tracking: `otaBytesWritten`, `otaTotalSize` global variables
+   - Update progress during `Update.write()` operations
+   - `/update_status` JSON endpoint for client polling (800ms intervals)
+   - 1-second logging intervals showing flash write percentage
+
+3. **Response Timing Optimization**:
+   - Send HTTP 200 response immediately with `Connection: close` header
+   - 1500ms delay before `ESP.restart()` to ensure response transmission
+   - Client-side 3-second wait after flash complete before polling
+   - 70-second polling window for device reboot and startup
+
+4. **Status Message Flow**:
+   - "Uploading firmware: X remaining"
+   - "Upload complete, writing to flash..."
+   - "Flash complete. Device rebooting..."
+   - "Waiting for reboot and startup (up to 15s)..."
+   - "✓ Update successful! Version X.X.X"
+
+5. **Code Cleanup**:
+   - Removed redundant standalone `/update` GET endpoint (~70 lines)
+   - Integrated all OTA functionality into System tab
+   - Reduced code duplication and maintenance burden
+
+**Technical Details**:
+```cpp
+// Global OTA tracking variables
+volatile size_t otaBytesWritten = 0;
+volatile size_t otaTotalSize = 0;
+volatile bool otaInProgress = false;
+volatile bool otaRebooting = false;
+
+// Upload handler updates
+if (index == 0) {
+    otaTotalSize = request->contentLength();
+    otaInProgress = true;
+}
+
+// Track flash write progress
+otaBytesWritten = index + len;
+if (currentTime - otaLastUpdateLog > 1000) {
+    Serial.printf("Flash write progress: %.1f%%\n", 
+                  (otaBytesWritten * 100.0) / otaTotalSize);
+}
+
+// Response timing
+AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", "OK");
+response->addHeader("Connection", "close");
+request->send(response);
+delay(1500);  // Allow response transmission
+ESP.restart();
+```
+
+**Files Modified**:
+- `src/Main-Thermostat.cpp`: Added OTA tracking, improved upload handler, removed standalone page
+- `include/WebPages.h`: Enhanced System tab with progress tracking UI
+
+**Testing Results**:
+- Upload progress bar shows accurate real-time progress
+- Flash write progress updates every second
+- No connection error messages - clean reboot handling
+- Version verification confirms successful update
+- Reduced flash usage by ~2KB with code cleanup
+
+**Lessons Learned**:
+1. **Browser XHR behavior**: Connection drops on reboot cause errors even after successful response - must send response before restart
+2. **Timing is critical**: Device needs adequate time (3-5s) for reboot and initialization before polling
+3. **Progress visibility**: Users need feedback during both upload and flash write phases
+4. **Code organization**: Integrated features in tabs provide better UX than standalone pages
 
 This development guide provides the foundation for extending and maintaining the Smart Thermostat Alt Firmware project. Follow these patterns and practices to ensure code quality and system reliability.

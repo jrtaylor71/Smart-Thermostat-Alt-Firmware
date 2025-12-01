@@ -22,7 +22,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 - **🌐 Modern Web Interface**: Complete tabbed interface with embedded scheduling - no separate pages
 - **📡 Offline Operation**: Full functionality without WiFi connection
 - **🔧 Professional PCB**: Custom PCB design for clean, permanent installation
-- **🔄 OTA Updates**: Over-the-air firmware updates
+- **🔄 OTA Updates**: Over-the-air firmware updates with real-time progress tracking
 - **🔒 Factory Reset**: Built-in reset capability via boot button
 
 ## 🚀 Quick Start
@@ -154,7 +154,9 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.1.0 (November 2025)
+**Current Version**: 1.3.0 (November 2025)
+- **Enhanced OTA Updates**: Real-time progress tracking for upload and flash write operations
+- **Improved OTA UX**: Integrated OTA interface in System tab with status messages and reboot timing
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
 - **LD2410 Motion Sensor Integration**: 24GHz mmWave radar for automatic display wake with robust detection
 - **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs

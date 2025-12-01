@@ -4,10 +4,10 @@
 
 The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermostat system built on the ESP32-S3 platform with professional PCB design. This alternative firmware for Stefan Meisner's smart-thermostat hardware provides enhanced features including dual-core architecture, centralized display management, and advanced multi-stage HVAC control.
 
-**Current Version**: 1.1.0 (November 2025)
+**Current Version**: 1.3.0 (November 2025)
 **Hardware**: ESP32-S3-WROOM-1-N16 (16MB Flash)
 **Architecture**: Dual-core FreeRTOS with Option C display management
-**Status**: Production-ready with comprehensive testing and scheduling
+**Status**: Production-ready with comprehensive testing, scheduling, and enhanced OTA updates
 
 ### Key Features
 
@@ -26,7 +26,7 @@ The Smart Thermostat Alt Firmware is a comprehensive, feature-rich smart thermos
 - **Custom PCB Design**: Professional PCB by Stefan Meisner for clean installation
 - **Modern UI**: Material Design color scheme with responsive touch interface
 - **Factory Reset**: 10-second boot button press for complete settings reset
-- **OTA Updates**: Over-the-air firmware updates via web interface
+- **OTA Updates**: Over-the-air firmware updates with real-time upload and flash write progress tracking
 
 ## Hardware Components
 
@@ -214,7 +214,11 @@ Complete 7-day scheduling system:
 #### System Tab
 - Device information and system status
 - Firmware version and hardware details
-- OTA firmware update interface
+- OTA firmware update interface with real-time progress tracking
+  - Upload progress bar with transfer speed and ETA
+  - Flash write progress with percentage indication
+  - Automatic reboot handling with status messages
+  - Version verification after successful update
 - System restart controls
 
 ### API Endpoints
@@ -222,7 +226,9 @@ Complete 7-day scheduling system:
 - `/schedule_set`: Schedule configuration processing (POST)
 - `/status`: JSON API for current status
 - `/control`: JSON API for remote control
-- `/update`: OTA firmware update interface
+- `/update`: OTA firmware update endpoint (POST)
+- `/update_status`: Real-time OTA progress JSON endpoint
+- `/version`: Firmware version JSON endpoint
 - `/reboot`: System restart endpoint
 
 ## 7-Day Scheduling System
@@ -506,7 +512,20 @@ Located in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
 
 ## Version History
 
-### Version 1.1.0 (Current - November 2025)
+### Version 1.3.0 (Current - November 2025)
+- **Enhanced OTA Update System**: Real-time progress tracking for firmware uploads
+- **Flash Write Progress**: Visual feedback during flash write operations with percentage updates
+- **Improved OTA User Experience**: Integrated OTA interface in System tab with clear status messages
+- **Optimized Reboot Timing**: Proper response transmission before device restart
+- **Version Verification**: Automatic firmware version confirmation after successful update
+- **Code Cleanup**: Removed redundant standalone update page, streamlined codebase
+
+### Version 1.2.4 (November 2025)
+- **OTA Progress Improvements**: Added upload progress bar and flash write tracking
+- **Enhanced Status Messages**: Clear indication of update stages
+- **Reboot Timing Fix**: Improved timing to prevent connection error messages
+
+### Version 1.1.0 (November 2025)
 - **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
 - **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, and System tabs
 - **Enhanced Schedule Features**: Per-day enable/disable, time controls, override system, and MQTT integration
