@@ -73,7 +73,7 @@ Smart-Thermostat-Alt-Firmware/
 - PlatformIO build configuration for ESP32-S3-WROOM-1-N16
 - Library dependencies with specific versions
 - Build flags for TFT_eSPI hardware pin configuration
-- Partition scheme: huge_app.csv for maximum application space
+- Partition scheme: default_16mb.csv for maximum application space
 - Serial monitor settings and upload configuration
 
 #### `Thermostat-sch.pdf`

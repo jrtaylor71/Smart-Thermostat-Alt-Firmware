@@ -674,7 +674,7 @@ Located in `ESP32-Simple-Thermostat-PCB/jlcpcb/`:
 - **Always-Visible Options**: All schedule controls permanently displayed without hidden menus
 
 ### Version 1.0.8 (November 2025)
-- **ESP32-S3-WROOM-1-N16 Platform**: Optimized for 16MB flash with huge_app.csv partition
+- **ESP32-S3-WROOM-1-N16 Platform**: Optimized for 16MB flash with default_16mb.csv partition
 - **Dual-Core FreeRTOS Architecture**: Core 0 for UI/network, Core 1 for sensors/control
 - **Option C Centralized Display Management**: Mutex-protected display updates with task coordination
 - **Modern Material Design UI**: Enhanced color scheme with improved readability

@@ -11,7 +11,7 @@ This guide helps developers understand, modify, and extend the Smart Thermostat 
 - **Sensors**: AHT20 (I2C temp/humidity), DS18B20 (OneWire hydronic temp), LD2410 (24GHz mmWave motion)
 - **Weather**: Dual-source (OpenWeatherMap/Home Assistant) with color-coded standard icons
 - **Architecture**: Dual-core FreeRTOS with Option C centralized display management
-- **Memory Usage**: ~3.2MB flash (18.5% utilization = 1,210,272 bytes with huge_app.csv partition)
+- **Memory Usage**: ~3.2MB flash (18.5% utilization = 1,210,272 bytes with default_16mb.csv partition)
 - **Key Features**: Weather integration, motion wake on presence, I2C mutex protection, anti-flicker display, sustained motion tracking with filtering
 
 ## 🎯 Development Environment Setup

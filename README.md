@@ -44,7 +44,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 2. Clone this repository
 3. Open project in PlatformIO
 4. Configuration optimized for ESP32-S3-WROOM-1-N16 (16MB flash)
-5. Flash utilization: 30.3% (3.14MB available with huge_app.csv partition)
+5. Memory usage: RAM 15.2% (49728/327680 bytes); Flash 18.5% (1209901/6553600 bytes, default_16mb.csv partition)
 6. Build and upload to ESP32-S3
 7. Use touch interface to configure WiFi and settings
 
