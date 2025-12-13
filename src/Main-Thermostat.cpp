@@ -139,7 +139,7 @@ String owmCountry = "";
 String haUrl = "";
 String haToken = "";
 String haEntityId = "";
-int weatherUpdateInterval = 10; // Update interval in minutes (default 10)
+int weatherUpdateInterval = 5; // Update interval in minutes (default 5)
 Weather weather; // Weather object
 
 // Hybrid staging settings
@@ -233,7 +233,7 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standa
 String hostname = "Smart-Thermostat-Alt"; // Default hostname
 
 // Version control information
-const String sw_version = "1.3.5"; // Software version
+const String sw_version = "1.3.6"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -947,6 +947,8 @@ void setup()
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("\nConnected to WiFi");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
             wifiConnected = true;
             
             // Only start web server and MQTT if connected
@@ -984,9 +986,16 @@ void setup()
                 Serial.println("Fetching initial weather data...");
                 bool success = weather.update();
                 Serial.printf("Initial weather fetch: %s\n", success ? "SUCCESS" : "FAILED");
-                if (!success) {
-                    Serial.printf("Weather error: %s\n", weather.getLastError().c_str());
+                if (success) {
+                    WeatherData data = weather.getData();
+                    Serial.printf("  Temperature: %.1f\n", data.temperature);
+                    Serial.printf("  Condition: %s\n", data.condition.c_str());
+                    Serial.printf("  Icon: %s\n", data.iconCode.c_str());
+                } else {
+                    Serial.printf("  Weather error: %s\n", weather.getLastError().c_str());
                 }
+            } else {
+                Serial.println("Weather is DISABLED (weatherSource = 0)");
             }
         }
         else
@@ -1350,6 +1359,8 @@ void setupWiFi()
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("Connected to WiFi");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
         }
         else
         {
@@ -1387,6 +1398,8 @@ void connectToWiFi()
         if (WiFi.status() == WL_CONNECTED)
         {
             Serial.println("Connected to WiFi");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
         }
         else
         {
@@ -1596,6 +1609,8 @@ void handleKeyPress(int row, int col)
                     tft.setCursor(30, 130);
                     tft.println("Restarting...");
                     Serial.println("Connected to WiFi");
+                    Serial.print("IP Address: ");
+                    Serial.println(WiFi.localIP());
                     delay(2000);
                     ESP.restart();
                 }
@@ -3056,6 +3071,29 @@ void handleWebRequests()
             request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
         } });
 
+    server.on("/weather_refresh", HTTP_POST, [](AsyncWebServerRequest *request)
+              {
+        Serial.println("WEATHER REFRESH: Manual refresh requested via web");
+        if (weatherSource == 0) {
+            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"Weather source is disabled\"}");
+            return;
+        }
+        if (WiFi.status() != WL_CONNECTED) {
+            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"WiFi not connected\"}");
+            return;
+        }
+        
+        weather.forceUpdate();
+        
+        if (weather.isDataValid()) {
+            WeatherData data = weather.getData();
+            String msg = "Updated: " + String(data.temperature, 1) + "°, " + data.condition;
+            request->send(200, "application/json", "{\"status\":\"success\",\"message\":\"" + msg + "\"}");
+        } else {
+            String error = weather.getLastError();
+            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"" + error + "\"}");
+        } });
+
     server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         // Use filtered temperature from sensor task instead of raw reading
@@ -3412,6 +3450,18 @@ void updateDisplay(float currentTemp, float currentHumidity)
     
     // Display weather if enabled and data is valid
     static bool lastWeatherDisplayState = false;
+    static unsigned long lastWeatherDisplayDebug = 0;
+    
+    // Debug every 10 seconds
+    if (millis() - lastWeatherDisplayDebug > 10000) {
+        Serial.printf("WEATHER DISPLAY CHECK: source=%d, valid=%d, WiFi=%d\n",
+                     weatherSource, weather.isDataValid(), WiFi.status() == WL_CONNECTED);
+        if (weatherSource != 0 && !weather.isDataValid()) {
+            Serial.printf("  Weather not valid, error: %s\n", weather.getLastError().c_str());
+        }
+        lastWeatherDisplayDebug = millis();
+    }
+    
     if (weatherSource != 0 && weather.isDataValid()) {
         if (!lastWeatherDisplayState) {
             Serial.println("WEATHER DISPLAY: Showing weather on TFT");
