@@ -1,10 +1,7 @@
-/*
- * ESP32-Simple-Thermostat - Alternative Firmware
+/* 
+ * Firmware Implementation
+ * Copyright (c) 2025 Jonn Taylor (jrtaylor@taylordatacom.com)
  * 
- * This is alternative firmware for the smart-thermostat hardware project.
- * Original hardware design by Stefan Meisner:
- * https://github.com/smeisner/smart-thermostat
- *
  * This firmware implementation provides enhanced features including:
  * - Option C centralized display management with FreeRTOS tasks
  * - Advanced multi-stage HVAC control with intelligent staging
@@ -13,12 +10,12 @@
  * - Web-based configuration interface
  * - Professional dual-core architecture for ESP32-S3
  *
- * Smart Thermostat Alt Firmware is free software: you can redistribute it and/or modify
+ * ESP32-S3 Simple Thermostat Firmware is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * Smart Thermostat Alt Firmware is distributed in the hope that it will be useful,
+ * ESP32-S3 Simple Thermostat Firmware is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -27,20 +24,14 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* 
- * Alternative Firmware Implementation
- * Copyright (c) 2025 Jonn Taylor (jrtaylor@taylordatacom.com)
- * 
- * Hardware Design Credits:
- * Original smart-thermostat hardware by Stefan Meisner
- * https://github.com/smeisner/smart-thermostat
- */
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <Adafruit_AHTX0.h>
+#include <DHT.h>
+#include <Adafruit_BME280.h>
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h> // Include the MQTT library
@@ -55,27 +46,40 @@
 #include <Update.h> // For OTA firmware update
 #include "esp_heap_caps.h" // Heap diagnostics
 #include "Weather.h" // Weather integration module
+#include "HardwarePins.h" // Hardware pin definitions
+#include "SettingsUI.h"
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
 const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
-// AHT20 sensor setup (I2C)
-Adafruit_AHTX0 aht;
-#define BOOT_BUTTON 0 // Define the GPIO pin connected to the boot button
 
-// LD2410 Motion Sensor pins
-#define LD2410_RX_PIN 16  // ESP32 RX (connect to LD2410 TX) - SWAPPED to test physical wiring
-#define LD2410_TX_PIN 15  // ESP32 TX (connect to LD2410 RX) - SWAPPED to test physical wiring
-#define LD2410_MOTION_PIN 18  // Digital motion output pin
+// Temperature/Humidity Sensor Configuration
+enum SensorType {
+    SENSOR_NONE = 0,
+    SENSOR_AHT20 = 1,
+    SENSOR_DHT11 = 2,
+    SENSOR_BME280 = 3
+};
+
+// Sensor instances (only one will be active based on auto-detection)
+Adafruit_AHTX0 aht;
+DHT dht(I2C_SCL_PIN, DHT11); // DHT11 uses GPIO35 (SCL pin) as data line
+Adafruit_BME280 bme;
+
+// Active sensor tracking
+SensorType activeSensor = SENSOR_NONE;
+String sensorName = "None";
+float currentPressure = 0.0; // Barometric pressure (BME280 only, in hPa)
+
+// Hardware pin definitions moved to HardwarePins.h
+// BOOT_BUTTON, LD2410 pins, ONE_WIRE_BUS, LIGHT_SENSOR_PIN, TFT_BACKLIGHT_PIN all defined there
 
 // Settings for factory reset
 unsigned long bootButtonPressStart = 0; // When the boot button was pressed
-const unsigned long FACTORY_RESET_PRESS_TIME = 10000; // 10 seconds in milliseconds
 bool bootButtonPressed = false; // Track if boot button is being pressed
 
-// DS18B20 sensor setup
-#define ONE_WIRE_BUS 34 // Define the pin where the DS18B20 is connected (ESP32-S3)
-OneWire oneWire(ONE_WIRE_BUS);
+// DS18B20 sensor setup (pin defined in HardwarePins.h as ONEWIRE_PIN)
+OneWire oneWire(ONEWIRE_PIN);
 DallasTemperature ds18b20(&oneWire);
 float hydronicTemp = 0.0;
 bool hydronicHeatingEnabled = false;
@@ -89,25 +93,13 @@ bool hydronicLowTempAlertSent = false; // Track if low temp alert has been sent
 unsigned long lastHydronicAlertTime = 0; // Track last alert time to prevent spam
 bool hydronicLockout = false; // Track hydronic safety lockout state
 
-// Light sensor and display dimming setup
-#define LIGHT_SENSOR_PIN 8 // Photocell/light sensor pin
-#define TFT_BACKLIGHT_PIN 14 // TFT backlight control pin
-const int PWM_CHANNEL = 0; // PWM channel for backlight control
-const int PWM_CHANNEL_HEAT = 1; // PWM channel for heat LED
-const int PWM_CHANNEL_COOL = 2; // PWM channel for cool LED
-const int PWM_CHANNEL_FAN = 3; // PWM channel for fan LED
-const int PWM_CHANNEL_BUZZER = 4; // PWM channel for buzzer
-const int PWM_FREQ = 5000; // PWM frequency
-const int PWM_RESOLUTION = 8; // 8-bit resolution (0-255)
-const int MIN_BRIGHTNESS = 30; // Minimum backlight brightness (0-255)
-const int MAX_BRIGHTNESS = 255; // Maximum backlight brightness (0-255)
-const int LIGHT_SENSOR_MIN = 100; // Minimum useful light sensor reading
-const int LIGHT_SENSOR_MAX = 3500; // Maximum useful light sensor reading (adjust based on your sensor)
-int currentBrightness = MAX_BRIGHTNESS; // Current backlight brightness
+// Light sensor and display dimming setup (PWM constants now in HardwarePins.h)
+// LIGHT_SENSOR_PIN and TFT_BACKLIGHT_PIN are defined in HardwarePins.h
+// PWM_CHANNEL, PWM_CHANNEL_HEAT, PWM_CHANNEL_COOL, PWM_CHANNEL_FAN, PWM_CHANNEL_BUZZER defined in HardwarePins.h
+// PWM_FREQ and PWM_RESOLUTION defined in HardwarePins.h
 int lastLightReading = 0; // Last light sensor reading
 unsigned long lastBrightnessUpdate = 0; // Last time brightness was updated
-const unsigned long BRIGHTNESS_UPDATE_INTERVAL = 1000; // Update brightness every 1 second
-
+int currentBrightness = MAX_BRIGHTNESS; // Current backlight brightness
 // Display sleep mode settings
 bool displaySleepEnabled = true; // Enable/disable display sleep mode
 unsigned long displaySleepTimeout = 300000; // Sleep after 5 minutes (300000ms) of inactivity
@@ -163,13 +155,20 @@ bool isEnteringSSID = true;
 // Add a new global flag to track WiFi setup mode
 bool inWiFiSetupMode = false;
 
+// Keyboard context to reuse keypad for WiFi and hostname entry (enum in SettingsUI.h)
+KeyboardMode keyboardMode = KB_WIFI_SSID;
+bool keyboardReturnToSettings = false;
+
+// Settings UI state
+bool inSettingsMenu = false;
+
 // Keyboard layout constants
 const char* KEYBOARD_UPPER[5][10] = {
     {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
     {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
     {"A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL"},
     {"Z", "X", "C", "V", "B", "N", "M", "SPC", "CLR", "OK"},
-    {"!", "@", "#", "$", "%", "^", "&", "*", "(", "SHIFT"}
+    {"!", "@", "#", "$", "_", "-", "&", "*", ")", "SHIFT"}
 };
 
 const char* KEYBOARD_LOWER[5][10] = {
@@ -190,20 +189,7 @@ const int KEYBOARD_Y_OFFSET = 75;
 // Dual-core task handle
 TaskHandle_t sensorTask;
 
-// GPIO pins for relays - ESP32-S3 schematic verified
-const int heatRelay1Pin = 5;   // Heat Stage 1
-const int heatRelay2Pin = 7;   // Heat Stage 2  
-const int coolRelay1Pin = 6;   // Cool Stage 1
-const int coolRelay2Pin = 39;  // Cool Stage 2
-const int fanRelayPin = 4;     // Fan Control
-
-// GPIO pins for status LEDs
-const int ledFanPin = 37;      // Fan status LED
-const int ledHeatPin = 38;     // Heat status LED
-const int ledCoolPin = 2;      // Cool status LED
-
-// GPIO pin for buzzer (5V buzzer through 2N7002 MOSFET)
-const int buzzerPin = 17;      // Buzzer pin
+// GPIO pin definitions moved to HardwarePins.h for centralized hardware abstraction
 
 // Settings
 float setTempHeat = 72.0; // Default set temperature for heating in Fahrenheit
@@ -230,10 +216,10 @@ String mqttPassword = "password";  // Replace with your MQTT password
 String timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Default time zone (Central Standard Time)
 
 // Add a preference for hostname
-String hostname = "Smart-Thermostat-Alt"; // Default hostname
+String hostname = DEFAULT_HOSTNAME; // Default hostname via ProjectConfig
 
 // Version control information
-const String sw_version = "1.3.6"; // Software version
+const String sw_version = "1.3.8"; // Software version
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -297,6 +283,9 @@ bool thermostatModeChanged = false;
 bool fanModeChanged = false;
 bool handlingMQTTMessage = false; // Add this flag
 
+// Force a full display redraw (clears cached values)
+bool forceFullDisplayRefresh = false;
+
 // Add declarations to support hydronic temperature display and sensor error checking
 float previousHydronicTemp = 0.0;
 bool ds18b20SensorPresent = false;
@@ -321,6 +310,8 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard);
 void connectToWiFi();
 void enterWiFiCredentials();
 void calibrateTouchScreen();
+void startWiFiSetupUI(bool returnToSettings);
+void exitKeyboardToPreviousScreen();
 void restoreDefaultSettings();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void sendMQTTData();
@@ -354,6 +345,11 @@ void turnOffAllRelays();
 void activateHeating();
 void activateCooling();
 void handleFanControl();
+
+// Sensor abstraction function prototypes
+SensorType detectSensor();
+bool initializeSensor(SensorType sensor);
+bool readTemperatureHumidity(float &temp, float &humidity, float &pressure);
 
 // Option C - Centralized Display Update System
 void displayUpdateTaskFunction(void* parameter);
@@ -409,60 +405,37 @@ unsigned long otaLastUpdateLog = 0;       // For throttled serial logging
 
 // Sensor reading task (runs on core 1)
 void sensorTaskFunction(void *parameter) {
-    unsigned long lastI2CError = 0;
-    const unsigned long I2C_ERROR_COOLDOWN = 30000; // 30 second cooldown between reinits
+    unsigned long lastSensorError = 0;
+    const unsigned long SENSOR_ERROR_COOLDOWN = 30000; // 30 second cooldown between reinits
     
     for (;;) {
-        // Read AHT20 sensor every 60 seconds to minimize processing load
-        sensors_event_t humidity, temp;
+        // Read sensor every 60 seconds to minimize processing load
+        float tempReading, humidityReading, pressureReading;
         
-        // Acquire I2C mutex with timeout
-        if (i2cMutex == NULL || xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-            Serial.println("[SENSOR] Failed to acquire I2C mutex, skipping read");
-            vTaskDelay(pdMS_TO_TICKS(60000));
-            continue;
-        }
+        // Try to read sensor using abstraction layer
+        bool readSuccess = readTemperatureHumidity(tempReading, humidityReading, pressureReading);
         
-        // Try to read sensor
-        bool readSuccess = false;
-        if (aht.getEvent(&humidity, &temp)) {
-            float rawTemp = temp.temperature;
-            float rawHumidity = humidity.relative_humidity;
-            readSuccess = true;
-            xSemaphoreGive(i2cMutex);
-        } else {
-            xSemaphoreGive(i2cMutex);
-            Serial.println("[SENSOR] AHT20 read failed!");
+        if (!readSuccess) {
+            Serial.println("[SENSOR] Read failed!");
             
             // Try to reinitialize if cooldown has passed
             unsigned long now = millis();
-            if (now - lastI2CError > I2C_ERROR_COOLDOWN) {
-                Serial.println("[SENSOR] Attempting AHT20 reinit...");
-                if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    if (aht.begin()) {
-                        Serial.println("[SENSOR] AHT20 reinitialized successfully");
-                    } else {
-                        Serial.println("[SENSOR] AHT20 reinit failed");
-                    }
-                    xSemaphoreGive(i2cMutex);
+            if (now - lastSensorError > SENSOR_ERROR_COOLDOWN) {
+                Serial.printf("[SENSOR] Attempting %s reinit...\n", sensorName.c_str());
+                if (initializeSensor(activeSensor)) {
+                    Serial.printf("[SENSOR] %s reinitialized successfully\n", sensorName.c_str());
+                } else {
+                    Serial.printf("[SENSOR] %s reinit failed\n", sensorName.c_str());
                 }
-                lastI2CError = now;
+                lastSensorError = now;
             }
             vTaskDelay(pdMS_TO_TICKS(60000));
             continue;
         }
         
-        if (!readSuccess) {
-            vTaskDelay(pdMS_TO_TICKS(60000));
-            continue;
-        }
-        
-        float rawTemp = temp.temperature;
-        float rawHumidity = humidity.relative_humidity;
-        
         // Apply calibration offsets
-        float calibratedTemp = getCalibratedTemperature(rawTemp);
-        float calibratedHumidity = getCalibratedHumidity(rawHumidity);
+        float calibratedTemp = getCalibratedTemperature(tempReading);
+        float calibratedHumidity = getCalibratedHumidity(humidityReading);
         
         float newTemp = useFahrenheit ? (calibratedTemp * 9.0 / 5.0 + 32.0) : calibratedTemp;
         float newHumidity = calibratedHumidity;
@@ -482,6 +455,11 @@ void sensorTaskFunction(void *parameter) {
             
             currentTemp = filteredTemp;
             currentHumidity = filteredHumidity;
+            
+            // Update pressure if BME280 sensor and valid reading
+            if (activeSensor == SENSOR_BME280 && !isnan(pressureReading)) {
+                currentPressure = pressureReading;
+            }
         }
         
         // Read DS18B20 hydronic temperature sensor if present
@@ -589,6 +567,163 @@ void setDisplayUpdateFlag() {
         Serial.println("[DISPLAY_FLAG_SET] Display update requested from controlRelays");
     } else {
         Serial.println("[DISPLAY_FLAG_FAILED] Could not acquire mutex");
+    }
+}
+
+// =============================================================================
+// TEMPERATURE/HUMIDITY SENSOR ABSTRACTION LAYER
+// =============================================================================
+
+// Auto-detect which sensor is connected
+SensorType detectSensor() {
+    Serial.println("[SENSOR] Starting sensor auto-detection...");
+    
+    // Initialize I2C bus first
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    delay(100);
+    
+    // Try AHT20 (I2C address 0x38)
+    Serial.println("[SENSOR] Checking for AHT20 at I2C address 0x38...");
+    if (aht.begin()) {
+        Serial.println("[SENSOR] AHT20 detected!");
+        return SENSOR_AHT20;
+    }
+    
+    // Try BME280 (I2C addresses 0x76 or 0x77)
+    Serial.println("[SENSOR] Checking for BME280 at I2C address 0x76...");
+    if (bme.begin(0x76)) {
+        Serial.println("[SENSOR] BME280 detected at address 0x76!");
+        return SENSOR_BME280;
+    }
+    
+    Serial.println("[SENSOR] Checking for BME280 at I2C address 0x77...");
+    if (bme.begin(0x77)) {
+        Serial.println("[SENSOR] BME280 detected at address 0x77!");
+        return SENSOR_BME280;
+    }
+    
+    // No I2C sensor found, try DHT11 on GPIO35
+    Serial.println("[SENSOR] No I2C sensors found, trying DHT11...");
+    Serial.println("[SENSOR] Disabling I2C, switching GPIO35 to DHT11 mode...");
+    Wire.end();
+    pinMode(I2C_SCL_PIN, INPUT_PULLUP); // Configure GPIO35 as regular GPIO
+    dht.begin();
+    delay(2000); // DHT11 needs time to stabilize
+    
+    // Try reading from DHT11
+    float testTemp = dht.readTemperature();
+    float testHum = dht.readHumidity();
+    
+    if (!isnan(testTemp) && !isnan(testHum)) {
+        Serial.println("[SENSOR] DHT11 detected!");
+        return SENSOR_DHT11;
+    }
+    
+    Serial.println("[SENSOR] ERROR: No temperature/humidity sensor detected!");
+    return SENSOR_NONE;
+}
+
+// Initialize the detected sensor
+bool initializeSensor(SensorType sensor) {
+    Serial.printf("[SENSOR] Initializing %s sensor...\n", 
+                  sensor == SENSOR_AHT20 ? "AHT20" : 
+                  sensor == SENSOR_DHT11 ? "DHT11" : 
+                  sensor == SENSOR_BME280 ? "BME280" : "NONE");
+    
+    switch(sensor) {
+        case SENSOR_AHT20:
+            Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+            if (aht.begin()) {
+                Serial.println("[SENSOR] AHT20 initialized successfully");
+                sensorName = "AHT20";
+                return true;
+            }
+            Serial.println("[SENSOR] AHT20 initialization failed");
+            return false;
+            
+        case SENSOR_DHT11:
+            Wire.end(); // Make sure I2C is disabled
+            pinMode(I2C_SCL_PIN, INPUT_PULLUP);
+            dht.begin();
+            delay(2000);
+            Serial.println("[SENSOR] DHT11 initialized successfully");
+            sensorName = "DHT11";
+            return true;
+            
+        case SENSOR_BME280:
+            Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+            if (bme.begin(0x76) || bme.begin(0x77)) {
+                // Configure BME280 for indoor monitoring
+                bme.setSampling(Adafruit_BME280::MODE_NORMAL,
+                               Adafruit_BME280::SAMPLING_X2,  // temperature
+                               Adafruit_BME280::SAMPLING_X16, // pressure
+                               Adafruit_BME280::SAMPLING_X1,  // humidity
+                               Adafruit_BME280::FILTER_X16,
+                               Adafruit_BME280::STANDBY_MS_500);
+                Serial.println("[SENSOR] BME280 initialized successfully");
+                sensorName = "BME280";
+                return true;
+            }
+            Serial.println("[SENSOR] BME280 initialization failed");
+            return false;
+            
+        default:
+            sensorName = "None";
+            return false;
+    }
+}
+
+// Read temperature, humidity, and pressure from active sensor
+bool readTemperatureHumidity(float &temp, float &humidity, float &pressure) {
+    pressure = NAN; // Default to NAN for sensors without pressure
+    
+    switch(activeSensor) {
+        case SENSOR_AHT20: {
+            if (i2cMutex == NULL || xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                return false;
+            }
+            
+            sensors_event_t humidityEvent, tempEvent;
+            bool success = aht.getEvent(&humidityEvent, &tempEvent);
+            xSemaphoreGive(i2cMutex);
+            
+            if (success) {
+                temp = tempEvent.temperature;
+                humidity = humidityEvent.relative_humidity;
+                return true;
+            }
+            return false;
+        }
+        
+        case SENSOR_DHT11: {
+            // DHT11 doesn't need mutex (not on I2C bus)
+            temp = dht.readTemperature();
+            humidity = dht.readHumidity();
+            
+            if (isnan(temp) || isnan(humidity)) {
+                return false;
+            }
+            return true;
+        }
+        
+        case SENSOR_BME280: {
+            if (i2cMutex == NULL || xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                return false;
+            }
+            
+            temp = bme.readTemperature();
+            humidity = bme.readHumidity();
+            pressure = bme.readPressure() / 100.0F; // Convert Pa to hPa
+            xSemaphoreGive(i2cMutex);
+            
+            if (isnan(temp) || isnan(humidity)) {
+                return false;
+            }
+            return true;
+        }
+        
+        default:
+            return false;
     }
 }
 
@@ -793,7 +928,7 @@ void setup()
     // Print version information at startup
     Serial.println();
     Serial.println("========================================");
-    Serial.println("Smart Thermostat Alt Firmware");
+    Serial.println(PROJECT_NAME_SHORT);
     Serial.print("Version: ");
     Serial.println(sw_version);
     Serial.print("Build Date: ");
@@ -845,19 +980,18 @@ void setup()
         Serial.println("I2C mutex created successfully");
     }
     
-    // Initialize I2C for AHT20 sensor (ESP32-S3 pins)
-    Wire.begin(36, 35); // SDA=36, SCL=35 per schematic
-    
-    // Initialize AHT20 sensor with mutex protection
-    if (i2cMutex != NULL && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        if (!aht.begin()) {
-            Serial.println("Could not find AHT20 sensor!");
+    // Auto-detect and initialize temperature/humidity sensor
+    activeSensor = detectSensor();
+    if (activeSensor != SENSOR_NONE) {
+        if (!initializeSensor(activeSensor)) {
+            Serial.println("ERROR: Sensor initialization failed!");
+            activeSensor = SENSOR_NONE;
+            sensorName = "None";
         } else {
-            Serial.println("AHT20 sensor initialized successfully");
+            Serial.printf("SUCCESS: %s sensor ready\n", sensorName.c_str());
         }
-        xSemaphoreGive(i2cMutex);
     } else {
-        Serial.println("ERROR: Failed to acquire I2C mutex for AHT20 init!");
+        Serial.println("ERROR: No temperature/humidity sensor detected!");
     }
 
     // Initialize the TFT display
@@ -867,9 +1001,7 @@ void setup()
     tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
     tft.setTextSize(3);  // Increased size from 2 to 3
     tft.setCursor(15, 40);  // Better centered for display
-    tft.println("Smart Thermostat");
-    tft.setCursor(60, 70);  // Second line centered
-    tft.println("Alt Firmware");
+    tft.println(PROJECT_NAME_SHORT);
     tft.setTextSize(2);  // Increased from 1 to 2 for better readability
     tft.setCursor(20, 110);  // Centered version info
     tft.println("Version: " + sw_version);
@@ -887,30 +1019,30 @@ void setup()
     calibrateTouchScreen();
 
     // Initialize relay pins
-    pinMode(heatRelay1Pin, OUTPUT);
-    pinMode(heatRelay2Pin, OUTPUT);
-    pinMode(coolRelay1Pin, OUTPUT);
-    pinMode(coolRelay2Pin, OUTPUT);
-    pinMode(fanRelayPin, OUTPUT);
+    pinMode(HEAT_RELAY_1_PIN, OUTPUT);
+    pinMode(HEAT_RELAY_2_PIN, OUTPUT);
+    pinMode(COOL_RELAY_1_PIN, OUTPUT);
+    pinMode(COOL_RELAY_2_PIN, OUTPUT);
+    pinMode(FAN_RELAY_PIN, OUTPUT);
 
     // Initialize LED pins with PWM for dimmed operation
     ledcSetup(PWM_CHANNEL_HEAT, PWM_FREQ, PWM_RESOLUTION);
     ledcSetup(PWM_CHANNEL_COOL, PWM_FREQ, PWM_RESOLUTION);
     ledcSetup(PWM_CHANNEL_FAN, PWM_FREQ, PWM_RESOLUTION);
-    ledcAttachPin(ledHeatPin, PWM_CHANNEL_HEAT);
-    ledcAttachPin(ledCoolPin, PWM_CHANNEL_COOL);
-    ledcAttachPin(ledFanPin, PWM_CHANNEL_FAN);
+    ledcAttachPin(LED_HEAT_PIN, PWM_CHANNEL_HEAT);
+    ledcAttachPin(LED_COOL_PIN, PWM_CHANNEL_COOL);
+    ledcAttachPin(LED_FAN_PIN, PWM_CHANNEL_FAN);
 
     // Initialize buzzer with dedicated PWM channel
     ledcSetup(PWM_CHANNEL_BUZZER, 4000, PWM_RESOLUTION); // 4kHz for buzzer
-    ledcAttachPin(buzzerPin, PWM_CHANNEL_BUZZER);
+    ledcAttachPin(BUZZER_PIN, PWM_CHANNEL_BUZZER);
 
     // Ensure all relays are off during bootup
-    digitalWrite(heatRelay1Pin, LOW);
-    digitalWrite(heatRelay2Pin, LOW);
-    digitalWrite(coolRelay1Pin, LOW);
-    digitalWrite(coolRelay2Pin, LOW);
-    digitalWrite(fanRelayPin, LOW);
+    digitalWrite(HEAT_RELAY_1_PIN, LOW);
+    digitalWrite(HEAT_RELAY_2_PIN, LOW);
+    digitalWrite(COOL_RELAY_1_PIN, LOW);
+    digitalWrite(COOL_RELAY_2_PIN, LOW);
+    digitalWrite(FAN_RELAY_PIN, LOW);
 
     // Ensure all LEDs are off during bootup
     ledcWrite(PWM_CHANNEL_HEAT, 0);
@@ -986,16 +1118,9 @@ void setup()
                 Serial.println("Fetching initial weather data...");
                 bool success = weather.update();
                 Serial.printf("Initial weather fetch: %s\n", success ? "SUCCESS" : "FAILED");
-                if (success) {
-                    WeatherData data = weather.getData();
-                    Serial.printf("  Temperature: %.1f\n", data.temperature);
-                    Serial.printf("  Condition: %s\n", data.condition.c_str());
-                    Serial.printf("  Icon: %s\n", data.iconCode.c_str());
-                } else {
-                    Serial.printf("  Weather error: %s\n", weather.getLastError().c_str());
+                if (!success) {
+                    Serial.printf("Weather error: %s\n", weather.getLastError().c_str());
                 }
-            } else {
-                Serial.println("Weather is DISABLED (weatherSource = 0)");
             }
         }
         else
@@ -1023,12 +1148,27 @@ void setup()
 
     // Read initial temperature and humidity
     // Read initial temperature and humidity from AHT20
-    sensors_event_t humidity, temp;
-    aht.getEvent(&humidity, &temp);
-    float calibratedTemp = getCalibratedTemperature(temp.temperature);
-    float calibratedHumidity = getCalibratedHumidity(humidity.relative_humidity);
-    currentTemp = useFahrenheit ? (calibratedTemp * 9.0 / 5.0 + 32.0) : calibratedTemp;
-    currentHumidity = calibratedHumidity;
+    // Get initial sensor reading to initialize temperature and humidity values
+    float tempReading, humidityReading, pressureReading;
+    if (readTemperatureHumidity(tempReading, humidityReading, pressureReading)) {
+        float calibratedTemp = getCalibratedTemperature(tempReading);
+        float calibratedHumidity = getCalibratedHumidity(humidityReading);
+        currentTemp = useFahrenheit ? (calibratedTemp * 9.0 / 5.0 + 32.0) : calibratedTemp;
+        currentHumidity = calibratedHumidity;
+        
+        // Store pressure if BME280 detected
+        if (activeSensor == SENSOR_BME280 && !isnan(pressureReading)) {
+            currentPressure = pressureReading;
+            Serial.printf("Initial pressure reading: %.1f hPa\n", currentPressure);
+        }
+        
+        Serial.printf("Initial readings - Temp: %.1f, Humidity: %.1f%%\n", currentTemp, currentHumidity);
+    } else {
+        Serial.println("WARNING: Failed to get initial sensor reading");
+        // Use fallback values
+        currentTemp = 72.0;
+        currentHumidity = 50.0;
+    }
     
     // Initialize filters with first reading
     filteredTemp = currentTemp;
@@ -1197,7 +1337,13 @@ void loop()
         return;
     }
 
-    // The rest of the loop function only runs when NOT in WiFi setup mode
+    // If in Settings UI, pause normal loop to keep touch responsive
+    if (inSettingsMenu) {
+        settingsLoopTick();
+        return;
+    }
+
+    // The rest of the loop function only runs when NOT in WiFi/setup/settings modes
     // Sensor reading now handled by background task on core 1
 
     // Control fan based on schedule - only check every 30 seconds
@@ -1456,7 +1602,24 @@ void drawKeyboard(bool isUpperCaseKeyboard)
     tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
     tft.setTextSize(2);
     tft.setCursor(10, 10);
-    tft.println(isEnteringSSID ? "Enter SSID:" : "Enter Password:");
+    const char* header = "Enter SSID:";
+    if (keyboardMode == KB_WIFI_PASS) {
+        header = "Enter Password:";
+    } else if (keyboardMode == KB_HOSTNAME) {
+        header = "Enter Hostname:";
+    }
+    tft.println(header);
+
+    // Back button to exit to main/settings
+    int backX = 250, backY = 5, backW = 60, backH = 25;
+    tft.fillRect(backX, backY, backW, backH, COLOR_WARNING);
+    tft.drawRect(backX, backY, backW, backH, COLOR_TEXT);
+    tft.setTextColor(TFT_BLACK, COLOR_WARNING);
+    tft.setTextSize(1);
+    tft.setCursor(backX + 10, backY + 9);
+    tft.print("Back");
+    tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+    tft.setTextSize(2);
     
     // Draw input text area with border
     tft.drawRect(5, 35, 310, 30, COLOR_TEXT);
@@ -1560,12 +1723,20 @@ void handleKeyPress(int row, int col)
     }
     else if (strcmp(keyLabel, "OK") == 0)
     {
-        if (isEnteringSSID)
-        {
+        // Context-aware OK handling: WiFi SSID/Pass or Hostname
+        if (keyboardMode == 2) { // KB_HOSTNAME
+            if (inputText.length() > 0) {
+                hostname = inputText;
+                saveSettings();
+                exitKeyboardToPreviousScreen();
+                return;
+            }
+        } else if (isEnteringSSID) {
             if (inputText.length() > 0) {
                 wifiSSID = inputText;
                 inputText = "";
                 isEnteringSSID = false;
+                keyboardMode = (KeyboardMode)1; // KB_WIFI_PASS
                 drawKeyboard(isUpperCaseKeyboard);
                 return; // Early return to avoid input update
             }
@@ -1675,14 +1846,13 @@ void drawButtons()
     tft.setTextSize(2);
     tft.print("-");
 
-    // Draw the WiFi settings button between minus and mode buttons
+    // Draw the Settings button between minus and mode buttons
     tft.fillRect(47, 200, 68, 40, COLOR_SECONDARY);
-    tft.setCursor(50, 208);
     tft.setTextColor(TFT_BLACK);
-    tft.setTextSize(2);
-    tft.print("WiFi");
-    tft.setCursor(55, 220);
-    tft.print("Setup");
+    tft.setTextSize(1);
+    // Center "Settings" text on button (button center x=81, text width ~42px at size 1)
+    tft.setCursor(57, 214);
+    tft.print("Settings");
 
     // Draw the thermostat mode button
     tft.fillRect(125, 200, 60, 40, COLOR_PRIMARY);
@@ -1739,37 +1909,24 @@ void handleButtonPress(uint16_t x, uint16_t y)
     
     lastButtonPressTime = currentTime;
     
-    // WiFi setup button - should work even in WiFi setup mode to allow cancellation
-    if (x > 45 && x < 125 && y > 195 && y < 245) // WiFi button with slightly increased touch area
-    {
-        if (inWiFiSetupMode) {
-            // Cancel WiFi setup and return to main screen
-            inWiFiSetupMode = false;
-            tft.fillScreen(COLOR_BACKGROUND);
-            updateDisplay(currentTemp, currentHumidity);
-            drawButtons();
-            return;
-        }
-        
-        // Handle WiFi setup button press - enter WiFi setup mode
-        inWiFiSetupMode = true;
-        tft.fillScreen(COLOR_BACKGROUND);
-        tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
-        tft.setTextSize(2);
-        tft.setCursor(10, 10);
-        tft.println("WiFi Setup");
-        
-        // Reset entering state to SSID first
-        inputText = "";
-        isEnteringSSID = true;
-        
-        // Draw keyboard for WiFi setup
-        drawKeyboard(isUpperCaseKeyboard);
+    // If keyboard is active, ignore main button handling (keyboard/back handles its own touches)
+    if (inWiFiSetupMode) {
         return;
     }
     
-    // If in WiFi setup mode, don't process other buttons
-    if (inWiFiSetupMode) {
+    // Route touches to settings UI when active
+    if (inSettingsMenu) {
+        if (settingsHandleTouch(x, y)) {
+            return;
+        }
+        // If not consumed, ignore to avoid falling through to main controls
+        return;
+    }
+    
+    // Settings button (formerly WiFi) to open settings menu
+    if (x > 45 && x < 125 && y > 195 && y < 245) // Settings button area
+    {
+        enterSettingsMenu();
         return;
     }
     
@@ -2009,7 +2166,7 @@ void publishHomeAssistantDiscovery()
         device["identifiers"] = hostname;
         device["name"] = hostname;
         device["manufacturer"] = "TDC";
-        device["model"] = "Simple Thermostat Alt Firmware";
+        device["model"] = PROJECT_NAME_SHORT;
         device["sw_version"] = sw_version;
 
         serializeJson(doc, buffer);
@@ -2039,7 +2196,7 @@ void publishHomeAssistantDiscovery()
             JsonObject device = motionDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
             device["name"] = hostname;
-            device["model"] = "ESP32-S3 with LD2410";
+            device["model"] = PROJECT_NAME_SHORT;
             device["manufacturer"] = "Custom";
             
             char motionBuffer[512];
@@ -2047,6 +2204,33 @@ void publishHomeAssistantDiscovery()
             mqttClient.publish(motionConfigTopic.c_str(), motionBuffer, true);
             
             Serial.println("Published LD2410 motion sensor discovery to Home Assistant");
+        }
+        
+        // Publish barometric pressure sensor discovery if BME280 is active
+        if (activeSensor == SENSOR_BME280) {
+            StaticJsonDocument<512> pressureDoc;
+            String pressureConfigTopic = "homeassistant/sensor/" + hostname + "_pressure/config";
+            
+            pressureDoc["name"] = hostname + " Barometric Pressure";
+            pressureDoc["device_class"] = "pressure";
+            pressureDoc["state_topic"] = hostname + "/barometric_pressure";
+            pressureDoc["unit_of_measurement"] = "inHg";
+            pressureDoc["unique_id"] = hostname + "_pressure";
+            pressureDoc["state_class"] = "measurement";
+            
+            // Link to same device as main thermostat
+            JsonObject device = pressureDoc.createNestedObject("device");
+            device["identifiers"][0] = hostname;
+            device["name"] = hostname;
+            device["model"] = PROJECT_NAME_SHORT;
+            device["manufacturer"] = "TDC";
+            device["sw_version"] = sw_version;
+            
+            char pressureBuffer[512];
+            serializeJson(pressureDoc, pressureBuffer);
+            mqttClient.publish(pressureConfigTopic.c_str(), pressureBuffer, true);
+            
+            Serial.println("Published BME280 pressure sensor discovery to Home Assistant");
         }
     }
     else
@@ -2172,6 +2356,19 @@ void sendMQTTData()
             String currentHumidityTopic = hostname + "/current_humidity";
             mqttClient.publish(currentHumidityTopic.c_str(), String(currentHumidity, 1).c_str(), true);
             lastHumidity = currentHumidity;
+        }
+        
+        // Publish barometric pressure if BME280 sensor is active
+        if (activeSensor == SENSOR_BME280 && !isnan(currentPressure))
+        {
+            static float lastPressure = 0.0;
+            if (currentPressure != lastPressure)
+            {
+                String pressureTopic = hostname + "/barometric_pressure";
+                float pressureInHg = currentPressure / 33.8639; // Convert hPa to inHg
+                mqttClient.publish(pressureTopic.c_str(), String(pressureInHg, 2).c_str(), true);
+                lastPressure = currentPressure;
+            }
         }
 
         // Publish target temperature (set temperature for heating, cooling, or auto)
@@ -2321,10 +2518,10 @@ void controlRelays(float currentTemp)
         Serial.println("[DEBUG] In OFF mode - turning off heating and cooling relays");
         // Turn off heating and cooling relays, but don't turn off fan
         // This allows the fan to operate in "on" or "cycle" mode even when thermostat is off
-        digitalWrite(heatRelay1Pin, LOW);
-        digitalWrite(heatRelay2Pin, LOW);
-        digitalWrite(coolRelay1Pin, LOW);
-        digitalWrite(coolRelay2Pin, LOW);
+        digitalWrite(HEAT_RELAY_1_PIN, LOW);
+        digitalWrite(HEAT_RELAY_2_PIN, LOW);
+        digitalWrite(COOL_RELAY_1_PIN, LOW);
+        digitalWrite(COOL_RELAY_2_PIN, LOW);
         heatingOn = false;
         coolingOn = false;
         stage1Active = false;
@@ -2333,13 +2530,13 @@ void controlRelays(float currentTemp)
         // Handle fan separately based on fanMode
         if (fanMode == "on") {
             if (!fanOn) {
-                digitalWrite(fanRelayPin, HIGH);
+                digitalWrite(FAN_RELAY_PIN, HIGH);
                 fanOn = true;
                 Serial.println("Fan on while thermostat is off");
             }
         }
         else if (fanMode == "auto") {
-            digitalWrite(fanRelayPin, LOW);
+            digitalWrite(FAN_RELAY_PIN, LOW);
             fanOn = false;
         }
         // Note: "cycle" fan mode is handled by controlFanSchedule()
@@ -2358,8 +2555,8 @@ void controlRelays(float currentTemp)
         // Turn off cooling relays when entering heat mode
         if (coolingOn) {
             Serial.println("[DEBUG] Turning off cooling relays in heat mode");
-            digitalWrite(coolRelay1Pin, LOW);
-            digitalWrite(coolRelay2Pin, LOW);
+            digitalWrite(COOL_RELAY_1_PIN, LOW);
+            digitalWrite(COOL_RELAY_2_PIN, LOW);
             coolingOn = false;
             // Reset staging flags to allow heating to start fresh
             stage1Active = false;
@@ -2398,8 +2595,8 @@ void controlRelays(float currentTemp)
         // Turn off heating relays when entering cool mode
         if (heatingOn) {
             Serial.println("[DEBUG] Turning off heating relays in cool mode");
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
+            digitalWrite(HEAT_RELAY_1_PIN, LOW);
+            digitalWrite(HEAT_RELAY_2_PIN, LOW);
             heatingOn = false;
             // Reset staging flags to allow cooling to start fresh
             stage1Active = false;
@@ -2493,11 +2690,11 @@ void controlRelays(float currentTemp)
     }
     
     // Debug: Verify actual relay pin states
-    bool actualHeat1 = digitalRead(heatRelay1Pin) == HIGH;
-    bool actualHeat2 = digitalRead(heatRelay2Pin) == HIGH;
-    bool actualCool1 = digitalRead(coolRelay1Pin) == HIGH;
-    bool actualCool2 = digitalRead(coolRelay2Pin) == HIGH;
-    bool actualFan = digitalRead(fanRelayPin) == HIGH;
+    bool actualHeat1 = digitalRead(HEAT_RELAY_1_PIN) == HIGH;
+    bool actualHeat2 = digitalRead(HEAT_RELAY_2_PIN) == HIGH;
+    bool actualCool1 = digitalRead(COOL_RELAY_1_PIN) == HIGH;
+    bool actualCool2 = digitalRead(COOL_RELAY_2_PIN) == HIGH;
+    bool actualFan = digitalRead(FAN_RELAY_PIN) == HIGH;
     
     Serial.printf("[DEBUG] controlRelays EXIT: RelayPins H1=%d H2=%d C1=%d C2=%d F=%d | Flags heat=%d cool=%d fan=%d stage1=%d stage2=%d\n", 
                  actualHeat1, actualHeat2, actualCool1, actualCool2, actualFan, 
@@ -2509,10 +2706,10 @@ void controlRelays(float currentTemp)
 void turnOffAllRelays()
 {
     Serial.println("[DEBUG] turnOffAllRelays() - Turning off heating/cooling relays");
-    digitalWrite(heatRelay1Pin, LOW);
-    digitalWrite(heatRelay2Pin, LOW);
-    digitalWrite(coolRelay1Pin, LOW);
-    digitalWrite(coolRelay2Pin, LOW);
+    digitalWrite(HEAT_RELAY_1_PIN, LOW);
+    digitalWrite(HEAT_RELAY_2_PIN, LOW);
+    digitalWrite(COOL_RELAY_1_PIN, LOW);
+    digitalWrite(COOL_RELAY_2_PIN, LOW);
     heatingOn = false;
     coolingOn = false;
     stage1Active = false; // Reset stage 1 active flag
@@ -2522,7 +2719,7 @@ void turnOffAllRelays()
     if (fanMode == "on") {
         // Keep fan running in "on" mode
         if (!fanOn) {
-            digitalWrite(fanRelayPin, HIGH);
+            digitalWrite(FAN_RELAY_PIN, HIGH);
             fanOn = true;
             Serial.println("[DEBUG] turnOffAllRelays() - Keeping fan ON (fanMode=on)");
         }
@@ -2530,7 +2727,7 @@ void turnOffAllRelays()
         // Turn off fan in auto mode when heating/cooling stops
         if (fanRelayNeeded) {
             // Only control fan if fanRelayNeeded is true
-            digitalWrite(fanRelayPin, LOW);
+            digitalWrite(FAN_RELAY_PIN, LOW);
             fanOn = false;
             Serial.println("[DEBUG] turnOffAllRelays() - Turning fan OFF (fanMode=auto)");
         }
@@ -2569,8 +2766,8 @@ void activateHeating() {
                          hydronicTempHigh, hydronicTemp);
             
             // Turn off heating relays
-            digitalWrite(heatRelay1Pin, LOW);
-            digitalWrite(heatRelay2Pin, LOW);
+            digitalWrite(HEAT_RELAY_1_PIN, LOW);
+            digitalWrite(HEAT_RELAY_2_PIN, LOW);
             heatingOn = false;
             stage1Active = false;
             stage2Active = false;
@@ -2579,7 +2776,7 @@ void activateHeating() {
             if (fanMode == "on" || fanMode == "cycle") {
                 if (!fanOn) {
                     Serial.println("[LOCKOUT] Keeping fan on for air circulation");
-                    digitalWrite(fanRelayPin, HIGH);
+                    digitalWrite(FAN_RELAY_PIN, HIGH);
                     fanOn = true;
                 }
             }
@@ -2597,39 +2794,47 @@ void activateHeating() {
     coolingOn = false;
     
     // Turn off cooling relays when activating heating
-    digitalWrite(coolRelay1Pin, LOW);
-    digitalWrite(coolRelay2Pin, LOW);
+    digitalWrite(COOL_RELAY_1_PIN, LOW);
+    digitalWrite(COOL_RELAY_2_PIN, LOW);
     
     // Check if stage 1 is not active yet
     if (!stage1Active) {
         Serial.println("[DEBUG] Activating heating stage 1 relay");
-        digitalWrite(heatRelay1Pin, HIGH); // Activate stage 1
+        digitalWrite(HEAT_RELAY_1_PIN, HIGH); // Activate stage 1
         stage1Active = true;
         stage1StartTime = millis(); // Record the start time
         stage2Active = false; // Ensure stage 2 is off initially
-        Serial.printf("[DEBUG] Stage 1 heating activated - relay pin %d set HIGH\n", heatRelay1Pin);
+        Serial.printf("[DEBUG] Stage 1 heating activated - relay pin %d set HIGH\n", HEAT_RELAY_1_PIN);
     } 
     // Check if it's time to activate stage 2 based on hybrid approach
     else if (!stage2Active && 
              ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
              (currentTemp < setTempHeat - tempSwing - stage2TempDelta) && // Temperature delta condition
              stage2HeatingEnabled) { // Check if stage 2 heating is enabled
-        digitalWrite(heatRelay2Pin, HIGH); // Activate stage 2
+        digitalWrite(HEAT_RELAY_2_PIN, HIGH); // Activate stage 2
         stage2Active = true;
         Serial.println("Stage 2 heating activated");
     }
     
     // Control fan based on fanRelayNeeded setting
-    if (fanRelayNeeded) {
+    // BUT: Never override manual "on" mode - user takes priority
+    if (fanMode == "on") {
+        // User has manually set fan to always on - respect that
         if (!fanOn) {
-            digitalWrite(fanRelayPin, HIGH);
+            digitalWrite(FAN_RELAY_PIN, HIGH);
+            fanOn = true;
+            Serial.println("Fan activated with heat (manual 'on' mode)");
+        }
+    } else if (fanRelayNeeded) {
+        if (!fanOn) {
+            digitalWrite(FAN_RELAY_PIN, HIGH);
             fanOn = true;
             Serial.println("Fan activated with heat");
         }
     } else {
         // HVAC controls its own fan, turn ours off
         if (fanOn) {
-            digitalWrite(fanRelayPin, LOW);
+            digitalWrite(FAN_RELAY_PIN, LOW);
             fanOn = false;
             Serial.println("Fan turned off during heat - HVAC controls fan");
         }
@@ -2647,17 +2852,17 @@ void activateCooling()
     heatingOn = false;
     
     // Turn off heating relays when activating cooling
-    digitalWrite(heatRelay1Pin, LOW);
-    digitalWrite(heatRelay2Pin, LOW);
+    digitalWrite(HEAT_RELAY_1_PIN, LOW);
+    digitalWrite(HEAT_RELAY_2_PIN, LOW);
     
     // Check if stage 1 is not active yet
     if (!stage1Active) {
         Serial.println("[DEBUG] Activating cooling stage 1 relay");
-        digitalWrite(coolRelay1Pin, HIGH); // Activate stage 1
+        digitalWrite(COOL_RELAY_1_PIN, HIGH); // Activate stage 1
         stage1Active = true;
         stage1StartTime = millis(); // Record the start time
         stage2Active = false; // Ensure stage 2 is off initially
-        Serial.printf("[DEBUG] Stage 1 cooling activated - relay pin %d set HIGH\n", coolRelay1Pin);
+        Serial.printf("[DEBUG] Stage 1 cooling activated - relay pin %d set HIGH\n", COOL_RELAY_1_PIN);
     } else {
         Serial.printf("[DEBUG] Cooling stage 1 already active (stage1Active=%d)\n", stage1Active);
     }
@@ -2666,22 +2871,30 @@ void activateCooling()
             ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
             (currentTemp > setTempCool + tempSwing + stage2TempDelta) && // Temperature delta condition
             stage2CoolingEnabled) { // Check if stage 2 cooling is enabled
-        digitalWrite(coolRelay2Pin, HIGH); // Activate stage 2
+        digitalWrite(COOL_RELAY_2_PIN, HIGH); // Activate stage 2
         stage2Active = true;
         Serial.println("Stage 2 cooling activated");
     }
     
     // Control fan based on fanRelayNeeded setting
-    if (fanRelayNeeded) {
+    // BUT: Never override manual "on" mode - user takes priority
+    if (fanMode == "on") {
+        // User has manually set fan to always on - respect that
         if (!fanOn) {
-            digitalWrite(fanRelayPin, HIGH);
+            digitalWrite(FAN_RELAY_PIN, HIGH);
+            fanOn = true;
+            Serial.println("Fan activated with cooling (manual 'on' mode)");
+        }
+    } else if (fanRelayNeeded) {
+        if (!fanOn) {
+            digitalWrite(FAN_RELAY_PIN, HIGH);
             fanOn = true;
             Serial.println("Fan activated with cooling");
         }
     } else {
         // HVAC controls its own fan, turn ours off
         if (fanOn) {
-            digitalWrite(fanRelayPin, LOW);
+            digitalWrite(FAN_RELAY_PIN, LOW);
             fanOn = false;
             Serial.println("Fan turned off during cool - HVAC controls fan");
         }
@@ -2716,7 +2929,7 @@ void handleFanControl()
     
     // Only write GPIO if state actually changed (state guard)
     if (newFanState != fanOn) {
-        digitalWrite(fanRelayPin, newFanState ? HIGH : LOW);
+        digitalWrite(FAN_RELAY_PIN, newFanState ? HIGH : LOW);
         fanOn = newFanState;
         Serial.printf("[FAN] Fan state changed via handleFanControl: %s\n", fanOn ? "ON" : "OFF");
     }
@@ -2741,7 +2954,7 @@ void controlFanSchedule()
         // Don't run cycle schedule if heating or cooling is active
         if (heatingOn || coolingOn) {
             if (!fanRelayNeeded && fanOn) {
-                digitalWrite(fanRelayPin, LOW);
+                digitalWrite(FAN_RELAY_PIN, LOW);
                 fanOn = false;
                 Serial.println("[FAN SCHEDULE] Stopping fan - heating/cooling active, fanRelayNeeded=false");
             }
@@ -2778,7 +2991,7 @@ void controlFanSchedule()
         
         // Only write GPIO if state actually changed
         if (shouldRun != fanOn) {
-            digitalWrite(fanRelayPin, shouldRun ? HIGH : LOW);
+            digitalWrite(FAN_RELAY_PIN, shouldRun ? HIGH : LOW);
             fanOn = shouldRun;
             Serial.printf("[FAN SCHEDULE] Cycle mode: increment %lu/%lu, fan %s\n", 
                          currentIncrement, totalIncrements, fanOn ? "ON" : "OFF");
@@ -2800,8 +3013,8 @@ void handleWebRequests()
         String html = generateStatusPage(currentTemp, currentHumidity, hydronicTemp, 
                                        thermostatMode, fanMode, version_info, hostname, 
                                        useFahrenheit, hydronicHeatingEnabled,
-                                       heatRelay1Pin, heatRelay2Pin, coolRelay1Pin, 
-                                       coolRelay2Pin, fanRelayPin,
+                                       HEAT_RELAY_1_PIN, HEAT_RELAY_2_PIN, COOL_RELAY_1_PIN, 
+                                       COOL_RELAY_2_PIN, FAN_RELAY_PIN,
                                        setTempHeat, setTempCool, setTempAuto,
                                        tempSwing, autoTempSwing,
                                        fanRelayNeeded, stage1MinRuntime, 
@@ -3041,8 +3254,8 @@ void handleWebRequests()
         if (request->hasParam("heating", true)) {
             String heatingState = request->getParam("heating", true)->value();
             heatingOn = heatingState == "on";
-            digitalWrite(heatRelay1Pin, heatingOn ? HIGH : LOW);
-            digitalWrite(heatRelay2Pin, heatingOn ? HIGH : LOW);
+            digitalWrite(HEAT_RELAY_1_PIN, heatingOn ? HIGH : LOW);
+            digitalWrite(HEAT_RELAY_2_PIN, heatingOn ? HIGH : LOW);
             request->send(200, "application/json", "{\"heating\": \"" + heatingState + "\"}");
         } else {
             request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
@@ -3053,8 +3266,8 @@ void handleWebRequests()
         if (request->hasParam("cooling", true)) {
             String coolingState = request->getParam("cooling", true)->value();
             coolingOn = coolingState == "on";
-            digitalWrite(coolRelay1Pin, coolingOn ? HIGH : LOW);
-            digitalWrite(coolRelay2Pin, coolingOn ? HIGH : LOW);
+            digitalWrite(COOL_RELAY_1_PIN, coolingOn ? HIGH : LOW);
+            digitalWrite(COOL_RELAY_2_PIN, coolingOn ? HIGH : LOW);
             request->send(200, "application/json", "{\"cooling\": \"" + coolingState + "\"}");
         } else {
             request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
@@ -3065,33 +3278,10 @@ void handleWebRequests()
         if (request->hasParam("fan", true)) {
             String fanState = request->getParam("fan", true)->value();
             fanOn = fanState == "on";
-            digitalWrite(fanRelayPin, fanOn ? HIGH : LOW);
+            digitalWrite(FAN_RELAY_PIN, fanOn ? HIGH : LOW);
             request->send(200, "application/json", "{\"fan\": \"" + fanState + "\"}");
         } else {
             request->send(400, "application/json", "{\"error\": \"Invalid request\"}");
-        } });
-
-    server.on("/weather_refresh", HTTP_POST, [](AsyncWebServerRequest *request)
-              {
-        Serial.println("WEATHER REFRESH: Manual refresh requested via web");
-        if (weatherSource == 0) {
-            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"Weather source is disabled\"}");
-            return;
-        }
-        if (WiFi.status() != WL_CONNECTED) {
-            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"WiFi not connected\"}");
-            return;
-        }
-        
-        weather.forceUpdate();
-        
-        if (weather.isDataValid()) {
-            WeatherData data = weather.getData();
-            String msg = "Updated: " + String(data.temperature, 1) + "°, " + data.condition;
-            request->send(200, "application/json", "{\"status\":\"success\",\"message\":\"" + msg + "\"}");
-        } else {
-            String error = weather.getLastError();
-            request->send(200, "application/json", "{\"status\":\"error\",\"message\":\"" + error + "\"}");
         } });
 
     server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -3384,6 +3574,12 @@ void handleWebRequests()
         
         request->send(200, "text/plain", "Schedule settings updated!");
     });
+
+    // Weather refresh endpoint for manual force update
+    server.on("/weather_refresh", HTTP_POST, [](AsyncWebServerRequest *request) {
+        weather.forceUpdate();
+        request->send(200, "text/plain", "Weather update forced");
+    });
 }
 
 void updateDisplay(float currentTemp, float currentHumidity)
@@ -3391,6 +3587,17 @@ void updateDisplay(float currentTemp, float currentHumidity)
     // Skip display updates when asleep to prevent flickering
     if (displayIsAsleep) {
         return;
+    }
+
+    bool fullRefreshTriggered = forceFullDisplayRefresh;
+
+    // If a full refresh was requested (e.g., exiting settings), reset cached values
+    if (fullRefreshTriggered) {
+        previousTemp = NAN;
+        previousHumidity = NAN;
+        previousHydronicTemp = NAN;
+        previousSetTemp = NAN;
+        forceFullDisplayRefresh = false;
     }
     
     unsigned long displayStart = millis();
@@ -3404,7 +3611,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
     {
         unsigned long afterTime = millis();
         Serial.printf("[DEBUG] getLocalTime took %lu ms\n", afterTime - beforeTime);
-        // Build formatted time string: "10:40 Monday Dec 1 2025"
+        // Build formatted time string: "10:40 Mon Dec 1 2025"
         char timePart[8];
         if (use24HourClock) {
             strftime(timePart, sizeof(timePart), "%H:%M", &timeinfo);
@@ -3416,7 +3623,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
             }
         }
         char dayName[16];
-        strftime(dayName, sizeof(dayName), "%A", &timeinfo);
+        strftime(dayName, sizeof(dayName), "%a", &timeinfo);
         char monthName[8];
         strftime(monthName, sizeof(monthName), "%b", &timeinfo);
         int dayNum = timeinfo.tm_mday;
@@ -3427,6 +3634,9 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
         // Display current time/date header only when it changes to reduce flicker
         static String lastHeaderLine = "";
+        if (fullRefreshTriggered) { // force refresh when cache reset
+            lastHeaderLine = "";
+        }
         String headerNow(headerLine);
         if (headerNow != lastHeaderLine) {
             tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
@@ -3450,18 +3660,9 @@ void updateDisplay(float currentTemp, float currentHumidity)
     
     // Display weather if enabled and data is valid
     static bool lastWeatherDisplayState = false;
-    static unsigned long lastWeatherDisplayDebug = 0;
-    
-    // Debug every 10 seconds
-    if (millis() - lastWeatherDisplayDebug > 10000) {
-        Serial.printf("WEATHER DISPLAY CHECK: source=%d, valid=%d, WiFi=%d\n",
-                     weatherSource, weather.isDataValid(), WiFi.status() == WL_CONNECTED);
-        if (weatherSource != 0 && !weather.isDataValid()) {
-            Serial.printf("  Weather not valid, error: %s\n", weather.getLastError().c_str());
-        }
-        lastWeatherDisplayDebug = millis();
+    if (fullRefreshTriggered) { // force refresh on cache reset
+        lastWeatherDisplayState = false;
     }
-    
     if (weatherSource != 0 && weather.isDataValid()) {
         if (!lastWeatherDisplayState) {
             Serial.println("WEATHER DISPLAY: Showing weather on TFT");
@@ -3484,25 +3685,100 @@ void updateDisplay(float currentTemp, float currentHumidity)
         lastWeatherDisplayState = false;
     }
 
-    // Update temperature and humidity only if they have changed
+    // Display WiFi status indicator in upper right corner
+    static int lastWiFiStatus = -1; // Track WiFi status to avoid unnecessary redraws
+    static int lastWiFiRSSI = -999;
+    if (fullRefreshTriggered) { // force redraw after returning from settings
+        lastWiFiStatus = -1;
+        lastWiFiRSSI = -999;
+    }
+    int currentWiFiStatus = WiFi.status();
+    int currentWiFiRSSI = 0;
+    if (currentWiFiStatus == WL_CONNECTED) {
+        currentWiFiRSSI = WiFi.RSSI();
+    }
+    
+    // Only redraw if status or signal strength changed significantly
+    if (lastWiFiStatus != currentWiFiStatus || abs(currentWiFiRSSI - lastWiFiRSSI) > 5) {
+        lastWiFiStatus = currentWiFiStatus;
+        lastWiFiRSSI = currentWiFiRSSI;
+        
+        // Clear WiFi indicator area (nudged ~10px right, slightly narrower to stay on-screen)
+        tft.fillRect(290, 0, 30, 25, COLOR_BACKGROUND);
+        
+        if (currentWiFiStatus == WL_CONNECTED) {
+            // Draw WiFi signal strength bars (0-4 bars based on RSSI)
+            // RSSI: -30 to -90 dBm (better to worse)
+            int bars = 0;
+            if (currentWiFiRSSI > -55) bars = 4;
+            else if (currentWiFiRSSI > -65) bars = 3;
+            else if (currentWiFiRSSI > -75) bars = 2;
+            else if (currentWiFiRSSI > -85) bars = 1;
+            
+            // Draw WiFi icon: 4 curved bars
+            // Using simple pixel drawing to create WiFi waves
+            tft.setTextColor(COLOR_SUCCESS, COLOR_BACKGROUND);
+            
+            // Draw filled bars based on signal strength
+            int barX = 295;
+            int barY = 5;
+            int barWidth = 2;
+            int barSpacing = 3;
+            
+            for (int i = 0; i < 4; i++) {
+                int barHeight = 2 + (i * 3); // Progressive heights: 2, 5, 8, 11
+                int y = barY + (12 - barHeight); // Bottom-aligned
+                
+                if (i < bars) {
+                    // Draw filled bar
+                    tft.fillRect(barX + (i * barSpacing), y, barWidth, barHeight, COLOR_SUCCESS);
+                } else {
+                    // Draw empty bar outline
+                    tft.drawRect(barX + (i * barSpacing), y, barWidth, barHeight, COLOR_SURFACE);
+                }
+            }
+        } else {
+            // Draw X for no WiFi
+            tft.setTextColor(COLOR_WARNING, COLOR_BACKGROUND);
+            tft.setTextSize(2);
+            tft.setCursor(295, 3);
+            tft.print("X");
+        }
+    }
     if (currentTemp != previousTemp || currentHumidity != previousHumidity)
     {
-        // Display temperature and humidity on the right side vertically
+        // Display temperature and humidity on the right side with compact spacing
         // Background color in setTextColor will clear as it writes
         tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2); // Adjust text size to fit the display
         tft.setRotation(1); // Set rotation for vertical display
-        tft.setCursor(240, 30); // Move temperature down a bit
+        
+        // Temperature at y=30 (moved to x=230 to prevent overlap with set temp)
+        tft.setCursor(230, 30);
         char tempStr[6];
         dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
         tft.print(tempStr);
-        tft.println(useFahrenheit ? "F" : "C");
+        tft.print(useFahrenheit ? "F" : "C");
 
-        tft.setCursor(240, 70); // Move humidity down a bit
+        // Humidity at y=60 (25px spacing)
+        tft.setCursor(230, 60);
         char humidityStr[6];
         dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
         tft.print(humidityStr);
-        tft.println("%");
+        tft.print("%");
+        
+        // Display pressure if BME280 sensor is active (convert hPa to inHg: divide by 33.8639)
+        if (activeSensor == SENSOR_BME280 && !isnan(currentPressure)) {
+            tft.setCursor(230, 90); // Pressure at y=90, 30px spacing
+            float pressureInHg = currentPressure / 33.8639; // Convert hPa to inHg
+            char pressureStr[7];
+            dtostrf(pressureInHg, 4, 2, pressureStr); // Format as "XX.XX"
+            tft.print(pressureStr);
+            tft.print("in");
+        } else {
+            // Clear pressure area if not BME280 or invalid
+            tft.fillRect(230, 90, 80, 16, COLOR_BACKGROUND);
+        }
 
         // Update previous values
         previousTemp = currentTemp;
@@ -3511,32 +3787,36 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
     // Display hydronic temperature if enabled and sensor is present
     static bool prevHydronicDisplayState = false;
-    
-    // Only update hydronic temp display if it's changed or display state has changed
-    // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
-    if (hydronicHeatingEnabled) {
-        if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
-            // Display hydronic temperature on right side
-            tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
-            tft.setTextSize(2);
-            tft.setCursor(240, 110); // Move hydronic temp down a bit
-            char hydronicTempStr[6];
-            dtostrf(hydronicTemp, 4, 1, hydronicTempStr);
-            tft.print(hydronicTempStr);
-            tft.println(useFahrenheit ? "F" : "C");
-            
-            previousHydronicTemp = hydronicTemp;
-            prevHydronicDisplayState = true;
-        }
-    } 
-    else if (prevHydronicDisplayState) {
-        // If hydronic heating is disabled or sensor not present, clear the area
-        tft.fillRect(240, 110, 80, 40, COLOR_BACKGROUND);
+    if (fullRefreshTriggered) { // force refresh on cache reset
         prevHydronicDisplayState = false;
     }
-
-    // Display hydronic lockout warning if active
+    
+    // Only update hydronic temp display if it's changed or display state has changed
+        // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
+        if (hydronicHeatingEnabled) {
+            if (hydronicTemp != previousHydronicTemp || !prevHydronicDisplayState) {
+                // Display hydronic temperature at y=120 (fixed position below sensors)
+                tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+                tft.setTextSize(2);
+                tft.setCursor(230, 120);
+                char hydronicTempStr[6];
+                dtostrf(hydronicTemp, 4, 1, hydronicTempStr);
+                tft.print(hydronicTempStr);
+                tft.print(useFahrenheit ? "F" : "C");
+                
+                previousHydronicTemp = hydronicTemp;
+                prevHydronicDisplayState = true;
+            }
+        } 
+        else if (prevHydronicDisplayState) {
+            // If hydronic heating is disabled, clear the DS18B20 display area
+            tft.fillRect(230, 120, 80, 16, COLOR_BACKGROUND);
+            prevHydronicDisplayState = false;
+        }    // Display hydronic lockout warning if active
     static bool prevHydronicLockoutDisplay = false;
+    if (fullRefreshTriggered) { // force refresh on cache reset
+        prevHydronicLockoutDisplay = false;
+    }
     if (hydronicHeatingEnabled && hydronicLockout) {
         if (!prevHydronicLockoutDisplay) {
             // Show lockout warning
@@ -3753,7 +4033,7 @@ void loadSettings()
     hydronicTempLow = preferences.getFloat("hydLow", 110.0);
     hydronicTempHigh = preferences.getFloat("hydHigh", 130.0);
     hydronicLowTempAlertSent = preferences.getBool("hydAlertSent", false);
-    hostname = preferences.getString("host", "Smart-Thermostat-Alt");
+    hostname = preferences.getString("host", DEFAULT_HOSTNAME);
     stage1MinRuntime = preferences.getUInt("stg1MnRun", 300);
     stage2TempDelta = preferences.getFloat("stg2Delta", 2.0);
     stage2HeatingEnabled = preferences.getBool("stg2HeatEn", false);
@@ -3881,13 +4161,20 @@ void handleKeyboardTouch(uint16_t x, uint16_t y, bool isUpperCaseKeyboard)
         return;
     }
     
-    // Only process keyboard touches if we're in WiFi setup mode
+    // Only process keyboard touches if we're in WiFi/setup keyboard mode
     if (!inWiFiSetupMode) {
+        return;
+    }
+
+    // Check for back button tap (top-right)
+    if (y < 35 && x > 250 && x < 310) {
+        exitKeyboardToPreviousScreen();
+        lastTouchTime = currentTime;
         return;
     }
     
     // Check if touch is within the keyboard area
-    if (y < 60) {  // Touch is above the keyboard, ignore
+    if (y < 60) {  // Touch is above the keyboard, ignore other regions
         return;
     }
     
@@ -3962,7 +4249,7 @@ void restoreDefaultSettings()
     timeZone = "CST6CDT,M3.2.0,M11.1.0"; // Reset time zone to default
     use24HourClock = true; // Reset clock format to default
     hydronicHeatingEnabled = false; // Reset hydronic heating setting to default
-    hostname = "Smart-Thermostat-Alt"; // Reset hostname to default
+    hostname = DEFAULT_HOSTNAME; // Reset hostname to default
 
     mqttPort = 1883; // Reset MQTT port default
     hydronicTempLow = 110.0; // Reset hydronic low temp

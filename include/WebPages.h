@@ -2,6 +2,7 @@
 #define WEBPAGES_H
 
 #include "WebInterface.h"
+#include "HardwarePins.h"
 
 // Schedule system structures
 struct SchedulePeriod {
@@ -73,7 +74,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Smart Thermostat - Status</title>";
+    html += "<title>"; html += String(PROJECT_NAME_SHORT); html += " - Status</title>";
     html += CSS_STYLES;
     html += "</head><body>";
     
@@ -81,7 +82,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     
     // Header
     html += "<div class='header'>";
-    html += "<h1>Smart Thermostat Alt Firmware</h1>";
+    html += "<h1>"; html += String(UI_PRODUCT_LINE); html += "</h1>";
     html += "<div class='version'>Version " + version_info + " • " + hostname + "</div>";
     html += "</div>";
     
@@ -743,6 +744,7 @@ String generateStatusPage(float currentTemp, float currentHumidity, float hydron
     
     html += "<div class='button-group' style='padding: 16px;'>";
     html += "<button type='submit' class='btn btn-primary'>💾 Save Weather Settings</button>";
+    html += "<button type='button' class='btn btn-secondary' onclick='forceWeatherUpdate()'>🔄 Force Update Now</button>";
     html += "</div>";
     html += "</form>";
     html += "</div>"; // End weather-content tab
@@ -771,7 +773,7 @@ String generateSettingsPage(String thermostatMode, String fanMode, float setTemp
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Smart Thermostat - Settings</title>";
+    html += "<title>"; html += String(PROJECT_NAME_SHORT); html += " - Settings</title>";
     html += CSS_STYLES;
     html += "</head><body>";
     
@@ -780,7 +782,7 @@ String generateSettingsPage(String thermostatMode, String fanMode, float setTemp
     // Header
     html += "<div class='header'>";
     html += "<h1>Thermostat Settings</h1>";
-    html += "<div class='version'>Configure your smart thermostat</div>";
+    html += "<div class='version'>Configure your "; html += String(PROJECT_NAME_SHORT); html += "</div>";
     html += "</div>";
     
     html += "<div class='content'>";
@@ -1036,7 +1038,7 @@ String generateOTAPage() {
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Smart Thermostat - OTA Update</title>";
+    html += "<title>"; html += String(PROJECT_NAME_SHORT); html += " - OTA Update</title>";
     html += CSS_STYLES;
     html += "</head><body>";
     
@@ -1105,7 +1107,7 @@ String generateFactoryResetPage() {
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Smart Thermostat - Factory Reset</title>";
+    html += "<title>"; html += String(PROJECT_NAME_SHORT); html += " - Factory Reset</title>";
     html += CSS_STYLES;
     html += "</head><body>";
     
@@ -1157,7 +1159,7 @@ String generateSchedulePage(DaySchedule weekSchedule[7], bool scheduleEnabled, S
     String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<title>Smart Thermostat - Schedule</title>";
+    html += "<title>"; html += String(PROJECT_NAME_SHORT); html += " - Schedule</title>";
     html += CSS_STYLES;
     html += "</head><body>";
     
