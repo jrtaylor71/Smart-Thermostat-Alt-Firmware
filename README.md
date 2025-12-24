@@ -155,20 +155,27 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.3.5 (December 2025)
-- **Weather Integration**: Dual-source weather support (OpenWeatherMap and Home Assistant)
-- **Weather Display**: Color-coded standard OWM icons with temperature, conditions, and high/low display
-- **Weather Web Interface**: Dedicated weather tab with AJAX form submission
-- **Anti-Flicker Display**: Cached redraw optimization for time and weather elements
-- **Enhanced Time Display**: Improved format "HH:MM Weekday Mon D YYYY" with flicker elimination
-- **Weather Settings**: Configurable update intervals (5-60 minutes) with state field for US cities
-- **Enhanced OTA Updates**: Real-time progress tracking for upload and flash write operations
-- **Improved OTA UX**: Integrated OTA interface in System tab with status messages and reboot timing
-- **7-Day Scheduling System**: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
-- **LD2410 Motion Sensor Integration**: 24GHz mmWave radar for automatic display wake with robust detection
-- **Modern Tabbed Web Interface**: All features embedded in main page - Status, Settings, Schedule, Weather, and System tabs
-- **Enhanced MQTT Integration**: Motion sensor auto-discovery and status publishing to Home Assistant
-- ESP32-S3-WROM-1-N16 platform with 16MB flash optimization
+**Current Version**: 1.3.8 (December 2025)
+### Release Notes: 1.3.8
+- Centralized all hardware pin definitions in `include/HardwarePins.h`
+- Removed scattered/duplicate pin constants from `src/Main-Thermostat.cpp`
+- Verified successful compilation and upload (ESP32-S3 WROOM 16MB)
+- Minor cleanup in Weather/Web modules and `platformio.ini`
+
+### Previous Highlights
+- Weather Integration: Dual-source weather support (OpenWeatherMap and Home Assistant)
+- Weather Display: Color-coded standard OWM icons with temperature, conditions, and high/low display
+- Weather Web Interface: Dedicated weather tab with AJAX form submission
+- Anti-Flicker Display: Cached redraw optimization for time and weather elements
+- Enhanced Time Display: Improved format "HH:MM Weekday Mon D YYYY" with flicker elimination
+- Weather Settings: Configurable update intervals (5-60 minutes) with state field for US cities
+- Enhanced OTA Updates: Real-time progress tracking for upload and flash write operations
+- Improved OTA UX: Integrated OTA interface in System tab with status messages and reboot timing
+- 7-Day Scheduling System: Complete inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
+- LD2410 Motion Sensor Integration: 24GHz mmWave radar for automatic display wake with robust detection
+- Modern Tabbed Web Interface: All features embedded in main page - Status, Settings, Schedule, Weather, and System tabs
+- Enhanced MQTT Integration: Motion sensor auto-discovery and status publishing to Home Assistant
+- ESP32-S3-WROOM-1-N16 platform with 16MB flash optimization
 - Modern Material Design color scheme with enhanced readability
 - Complete thermostat functionality with Option C display system
 - Enhanced MQTT/Home Assistant integration with temperature precision
