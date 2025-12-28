@@ -2165,8 +2165,8 @@ void publishHomeAssistantDiscovery()
         JsonObject device = doc.createNestedObject("device");
         device["identifiers"] = hostname;
         device["name"] = hostname;
-        device["manufacturer"] = "TDC";
-        device["model"] = PROJECT_NAME_SHORT;
+        device["manufacturer"] = MQTT_MANUFACTURER;
+        device["model"] = MQTT_MODEL;
         device["sw_version"] = sw_version;
 
         serializeJson(doc, buffer);
@@ -2196,8 +2196,8 @@ void publishHomeAssistantDiscovery()
             JsonObject device = motionDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
             device["name"] = hostname;
-            device["model"] = PROJECT_NAME_SHORT;
-            device["manufacturer"] = "Custom";
+            device["model"] = MQTT_MODEL;
+            device["manufacturer"] = MQTT_MANUFACTURER;
             
             char motionBuffer[512];
             serializeJson(motionDoc, motionBuffer);
@@ -2222,8 +2222,8 @@ void publishHomeAssistantDiscovery()
             JsonObject device = pressureDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
             device["name"] = hostname;
-            device["model"] = PROJECT_NAME_SHORT;
-            device["manufacturer"] = "TDC";
+            device["model"] = MQTT_MODEL;
+            device["manufacturer"] = MQTT_MANUFACTURER;
             device["sw_version"] = sw_version;
             
             char pressureBuffer[512];
