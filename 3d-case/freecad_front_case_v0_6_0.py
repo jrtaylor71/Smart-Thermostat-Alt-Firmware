@@ -349,17 +349,80 @@ for i in range(vent_slot_count_side):
         App.Console.PrintWarning("Right vent slot %d failed: %s\n" % (i, ex))
 
 # ---------- Add standoffs ----------
+# Identify the standoff closest to the display opening center
+standoff_positions = []
 for hole in pcb_mount_holes:
+    standoff_positions.append(
+        (
+            wall_thickness + hole[0] + pcb_clearance,
+            wall_thickness + hole[1] + pcb_clearance,
+        )
+    )
+
+# Compute nearest standoff index to display center
+nearest_idx = 0
+min_dist2 = 1e9
+for idx, (sx, sy) in enumerate(standoff_positions):
+    dx = (display_center_x - sx)
+    dy = (display_center_y - sy)
+    d2 = dx * dx + dy * dy
+    if d2 < min_dist2:
+        min_dist2 = d2
+        nearest_idx = idx
+
+# Create standoffs and trim the one facing the display to avoid collision
+for idx, hole in enumerate(pcb_mount_holes):
     x = wall_thickness + hole[0] + pcb_clearance
     y = wall_thickness + hole[1] + pcb_clearance
     # Standoff cylinder (hollow with hole)
-    standoff_outer = Part.makeCylinder(standoff_diameter / 2.0, standoff_height, 
-                                        App.Vector(x, y, face_thickness), 
-                                        App.Vector(0, 0, 1))
-    standoff_hole = Part.makeCylinder(hole_diameter / 2.0, standoff_height + 0.2, 
-                                       App.Vector(x, y, face_thickness - 0.1), 
-                                       App.Vector(0, 0, 1))
+    standoff_outer = Part.makeCylinder(
+        standoff_diameter / 2.0, standoff_height,
+        App.Vector(x, y, face_thickness),
+        App.Vector(0, 0, 1)
+    )
+    standoff_hole = Part.makeCylinder(
+        hole_diameter / 2.0, standoff_height + 0.2,
+        App.Vector(x, y, face_thickness - 0.1),
+        App.Vector(0, 0, 1)
+    )
     standoff = standoff_outer.cut(standoff_hole)
+
+    # If this is the standoff nearest to the display, trim the side facing the display opening
+    if idx == nearest_idx:
+        try:
+            # Determine primary direction towards display (X or Y)
+            dx = display_center_x - x
+            dy = display_center_y - y
+
+            trim_flat_amount = 1.2  # mm to flatten off the facing side
+            trim_len = standoff_diameter  # generous box length to fully clip the side
+            trim_wid = standoff_diameter
+            trim_hgt = standoff_height + 0.3
+
+            # Position the trim box so it removes the side facing the display
+            if abs(dx) >= abs(dy):
+                # Trim in X direction
+                if dx > 0:
+                    bx = x + standoff_diameter / 2.0 - trim_flat_amount
+                else:
+                    bx = x - standoff_diameter / 2.0 - (trim_len - trim_flat_amount)
+                by = y - standoff_diameter / 2.0
+            else:
+                # Trim in Y direction
+                if dy > 0:
+                    by = y + standoff_diameter / 2.0 - trim_flat_amount
+                else:
+                    by = y - standoff_diameter / 2.0 - (trim_wid - trim_flat_amount)
+                bx = x - standoff_diameter / 2.0
+
+            bz = face_thickness - 0.1
+            trim_box = Part.makeBox(trim_len, trim_wid, trim_hgt)
+            trim_box.translate(App.Vector(bx, by, bz))
+            standoff = standoff.cut(trim_box)
+            App.Console.PrintMessage("Trimmed standoff near display to prevent collision\n")
+        except Exception as ex:
+            App.Console.PrintWarning("Standoff trim failed (non-critical): %s\n" % ex)
+
     try:
         shell = shell.fuse(standoff)
     except Exception as ex:
