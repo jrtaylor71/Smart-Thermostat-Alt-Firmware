@@ -2165,8 +2165,8 @@ void publishHomeAssistantDiscovery()
         JsonObject device = doc.createNestedObject("device");
         device["identifiers"] = hostname;
         device["name"] = hostname;
-        device["manufacturer"] = MQTT_MANUFACTURER;
-        device["model"] = MQTT_MODEL;
+        device["manufacturer"] = "TDC";
+        device["model"] = PROJECT_NAME_SHORT;
         device["sw_version"] = sw_version;
 
         serializeJson(doc, buffer);
@@ -2196,8 +2196,8 @@ void publishHomeAssistantDiscovery()
             JsonObject device = motionDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
             device["name"] = hostname;
-            device["model"] = MQTT_MODEL;
-            device["manufacturer"] = MQTT_MANUFACTURER;
+            device["model"] = PROJECT_NAME_SHORT;
+            device["manufacturer"] = "Custom";
             
             char motionBuffer[512];
             serializeJson(motionDoc, motionBuffer);
@@ -2222,8 +2222,8 @@ void publishHomeAssistantDiscovery()
             JsonObject device = pressureDoc.createNestedObject("device");
             device["identifiers"][0] = hostname;
             device["name"] = hostname;
-            device["model"] = MQTT_MODEL;
-            device["manufacturer"] = MQTT_MANUFACTURER;
+            device["model"] = PROJECT_NAME_SHORT;
+            device["manufacturer"] = "TDC";
             device["sw_version"] = sw_version;
             
             char pressureBuffer[512];
@@ -2346,7 +2346,9 @@ void sendMQTTData()
         if (!isnan(currentTemp) && currentTemp != lastTemp)
         {
             String currentTempTopic = hostname + "/current_temperature";
-            mqttClient.publish(currentTempTopic.c_str(), String(currentTemp, 1).c_str(), true);
+            char tempStr[10];
+            snprintf(tempStr, sizeof(tempStr), "%.1f", currentTemp);
+            mqttClient.publish(currentTempTopic.c_str(), tempStr, true);
             lastTemp = currentTemp;
         }
 
