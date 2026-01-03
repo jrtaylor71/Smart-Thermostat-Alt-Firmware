@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
+// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles
 
 //
 // WebSocket example using the easy to use AsyncWebSocketMessageHandler handler that only supports unfragmented messages
@@ -40,7 +40,7 @@ static const char *htmlContent PROGMEM = R"(
 </head>
 <body>
   <h1>WebSocket Example</h1>
-  <>Open your browser console!</p>
+  <p>Open your browser console!</p>
   <input type="text" id="message" placeholder="Type a message">
   <button onclick='sendMessage()'>Send</button>
   <script>

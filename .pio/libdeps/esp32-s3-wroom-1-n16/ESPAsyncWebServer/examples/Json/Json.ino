@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Copyright 2016-2025 Hristo Gochkov, Mathieu Carbou, Emil Muratov
+// Copyright 2016-2026 Hristo Gochkov, Mathieu Carbou, Emil Muratov, Will Miles
 
 //
 // Shows how to send and receive Json data
@@ -56,8 +56,8 @@ void setup() {
     JsonDocument doc;
     JsonObject root = doc.to<JsonObject>();
     root["foo"] = "bar";
-    serializeJson(root, *response);
-    Serial.println();
+    // serializeJson(root, Serial);
+    // Serial.println();
     request->send(response);
   });
 
@@ -105,7 +105,19 @@ void setup() {
   server.begin();
 }
 
-// not needed
+static uint32_t lastHeapTime = 0;
+static uint32_t lastHeap = 0;
+
 void loop() {
-  delay(100);
+#ifdef ESP32
+  uint32_t now = millis();
+  if (now - lastHeapTime >= 500) {
+    uint32_t heap = ESP.getFreeHeap();
+    if (heap != lastHeap) {
+      lastHeap = heap;
+      async_ws_log_w("Free heap: %" PRIu32, heap);
+    }
+    lastHeapTime = now;
+  }
+#endif
 }

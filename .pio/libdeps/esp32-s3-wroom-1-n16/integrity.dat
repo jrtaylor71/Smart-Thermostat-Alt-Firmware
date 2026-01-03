@@ -1,14 +1,14 @@
-bblanchon/ArduinoJson@^7.4.2
-adafruit/Adafruit BME280 Library@^2.2.4
-milesburton/DallasTemperature@^4.0.5
-adafruit/DHT sensor library@^1.4.6
-adafruit/Adafruit Unified Sensor@^1.1.15
-esp32async/ESPAsyncWebServer@^3.9.2
-paulstoffregen/OneWire@^2.3.7
-WiFi
-Preferences
-bodmer/TFT_eSPI@^2.5.43
-iavorvel/MyLD2410@^1.2.5
-esp32async/AsyncTCP@^3.4.9
 knolleary/PubSubClient@^2.8
+bblanchon/ArduinoJson@^7.4.2
+milesburton/DallasTemperature@^4.0.5
+esp32async/AsyncTCP@^3.4.9
+Preferences
+WiFi
+iavorvel/MyLD2410@^1.2.5
+adafruit/DHT sensor library@^1.4.6
+bodmer/TFT_eSPI@^2.5.43
+adafruit/Adafruit BME280 Library@^2.2.4
+esp32async/ESPAsyncWebServer@^3.9.2
+adafruit/Adafruit Unified Sensor@^1.1.15
+paulstoffregen/OneWire@^2.3.7
 adafruit/Adafruit AHTX0@^2.0.5
