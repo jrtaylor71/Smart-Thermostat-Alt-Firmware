@@ -79,6 +79,12 @@ wall_mount_spacing_y = 60.0
 # Rounded corners
 corner_r = 4.0
 
+# USB port hole (on front case top wall, must avoid hook interference)
+# J1 (USB-C connector) abs: (169.97, 144.925) → rel to bbox min: (59.288, 79.015)
+usb_rel_x = 59.288
+usb_case_x = wall_thickness + pcb_clearance + usb_rel_x
+usb_width = 13.0  # USB-C connector opening width
+
 # Snap-fit parameters - slots in perimeter lip to receive front case tabs
 snap_tab_width = 12.0      # Must match front case
 snap_tab_length = 6.0      # Must match front case
@@ -373,15 +379,62 @@ else:
         
         if side == 'top':
             # Inside of top wall: vertical hook beam extending down wall + upward + outward barb
-            hook_beam = Part.makeBox(window_width, snap_hook_thickness, snap_hook_base_extension + snap_hook_height)
-            hook_beam.translate(App.Vector(pos - window_width / 2.0,
-                                           case_width - wall_thickness - snap_hook_thickness,
-                                           z_hook_base))
-            barb = Part.makeBox(window_width, snap_hook_overhang, snap_hook_barb_height)
-            barb.translate(App.Vector(pos - window_width / 2.0,
-                                      case_width - wall_thickness,
-                                      case_height + snap_hook_height - snap_hook_barb_height))
-            hook = hook_beam.fuse(barb)
+            # Check if hook would interfere with USB port and split if needed
+            usb_hole_left = usb_case_x - usb_width / 2.0
+            usb_hole_right = usb_case_x + usb_width / 2.0
+            hook_left = pos - window_width / 2.0
+            hook_right = pos + window_width / 2.0
+            
+            # If hook overlaps USB port area, split hook into left and right segments
+            if usb_hole_left < hook_right and usb_hole_right > hook_left:
+                # Create left segment
+                left_width = usb_hole_left - hook_left
+                if left_width > 2.0:  # Only create if segment is wide enough
+                    left_pos = hook_left + left_width / 2.0
+                    left_beam = Part.makeBox(left_width, snap_hook_thickness, snap_hook_base_extension + snap_hook_height)
+                    left_beam.translate(App.Vector(left_pos - left_width / 2.0,
+                                                   case_width - wall_thickness - snap_hook_thickness,
+                                                   z_hook_base))
+                    left_barb = Part.makeBox(left_width, snap_hook_overhang, snap_hook_barb_height)
+                    left_barb.translate(App.Vector(left_pos - left_width / 2.0,
+                                                   case_width - wall_thickness,
+                                                   case_height + snap_hook_height - snap_hook_barb_height))
+                    left_hook = left_beam.fuse(left_barb)
+                    try:
+                        shell = shell.fuse(left_hook)
+                    except:
+                        pass
+                
+                # Create right segment
+                right_width = hook_right - usb_hole_right
+                if right_width > 2.0:  # Only create if segment is wide enough
+                    right_pos = usb_hole_right + right_width / 2.0
+                    right_beam = Part.makeBox(right_width, snap_hook_thickness, snap_hook_base_extension + snap_hook_height)
+                    right_beam.translate(App.Vector(right_pos - right_width / 2.0,
+                                                    case_width - wall_thickness - snap_hook_thickness,
+                                                    z_hook_base))
+                    right_barb = Part.makeBox(right_width, snap_hook_overhang, snap_hook_barb_height)
+                    right_barb.translate(App.Vector(right_pos - right_width / 2.0,
+                                                    case_width - wall_thickness,
+                                                    case_height + snap_hook_height - snap_hook_barb_height))
+                    right_hook = right_beam.fuse(right_barb)
+                    try:
+                        shell = shell.fuse(right_hook)
+                    except:
+                        pass
+                
+                App.Console.PrintMessage("Split snap hook on top wall to clear USB port\n")
+            else:
+                # No interference, create normal hook
+                hook_beam = Part.makeBox(window_width, snap_hook_thickness, snap_hook_base_extension + snap_hook_height)
+                hook_beam.translate(App.Vector(pos - window_width / 2.0,
+                                               case_width - wall_thickness - snap_hook_thickness,
+                                               z_hook_base))
+                barb = Part.makeBox(window_width, snap_hook_overhang, snap_hook_barb_height)
+                barb.translate(App.Vector(pos - window_width / 2.0,
+                                          case_width - wall_thickness,
+                                          case_height + snap_hook_height - snap_hook_barb_height))
+                hook = hook_beam.fuse(barb)
             
         elif side == 'bottom':
             # Inside of bottom wall
@@ -418,12 +471,14 @@ else:
                                       pos - window_width / 2.0,
                                       case_height + snap_hook_height - snap_hook_barb_height))
             hook = hook_beam.fuse(barb)
-            
-        try:
-            shell = shell.fuse(hook)
-            App.Console.PrintMessage("Added snap hook on %s wall\n" % side)
-        except Exception as ex:
-            App.Console.PrintWarning("Snap hook %s fuse failed: %s\n" % (side, ex))
+        
+        # For top wall, hook fusing is handled inside the split logic
+        if side != 'top':
+            try:
+                shell = shell.fuse(hook)
+                App.Console.PrintMessage("Added snap hook on %s wall\n" % side)
+            except Exception as ex:
+                App.Console.PrintWarning("Snap hook %s fuse failed: %s\n" % (side, ex))
 
 # ---------- Add triangular supports at hook bases ----------
 # Create triangular support: wide base against wall, tapers up to inner hook edge
@@ -438,18 +493,63 @@ try:
         half_width = window_width / 2.0
         
         if side == 'top':
-            # Triangle in Y-Z plane: extrude along X across tab width
-            # Wide base at wall surface, taper point at inner hook edge
-            tri_pts = [
-                App.Vector(0, case_width - wall_thickness, z_hook_base - support_height),  # left at wall, lower
-                App.Vector(0, case_width - wall_thickness, z_hook_base),  # right at wall, at tab
-                App.Vector(0, case_width - wall_thickness - snap_hook_thickness, z_hook_base)  # apex at inner edge
-            ]
-            wire = Part.makePolygon(tri_pts + [tri_pts[0]])
-            tri_face = Part.Face(wire)
-            tri = tri_face.extrude(App.Vector(window_width, 0, 0))
-            tri = tri.translate(App.Vector(pos - half_width, 0, 0))
-            shell = shell.fuse(tri)
+            # Check if hook was split due to USB port interference
+            usb_hole_left = usb_case_x - usb_width / 2.0
+            usb_hole_right = usb_case_x + usb_width / 2.0
+            hook_left = pos - half_width
+            hook_right = pos + half_width
+            
+            # Only skip support if entire hook was removed (no segments wide enough)
+            left_width = usb_hole_left - hook_left
+            right_width = hook_right - usb_hole_right
+            
+            if not (usb_hole_left < hook_right and usb_hole_right > hook_left):
+                # No interference, add normal support
+                # Triangle in Y-Z plane: extrude along X across tab width
+                # Wide base at wall surface, taper point at inner hook edge
+                tri_pts = [
+                    App.Vector(0, case_width - wall_thickness, z_hook_base - support_height),  # left at wall, lower
+                    App.Vector(0, case_width - wall_thickness, z_hook_base),  # right at wall, at tab
+                    App.Vector(0, case_width - wall_thickness - snap_hook_thickness, z_hook_base)  # apex at inner edge
+                ]
+                wire = Part.makePolygon(tri_pts + [tri_pts[0]])
+                tri_face = Part.Face(wire)
+                tri = tri_face.extrude(App.Vector(window_width, 0, 0))
+                tri = tri.translate(App.Vector(pos - half_width, 0, 0))
+                shell = shell.fuse(tri)
+            else:
+                # Hook was split, add supports only for segments that exist (>2mm wide)
+                if left_width > 2.0:
+                    left_pos = hook_left + left_width / 2.0
+                    tri_pts = [
+                        App.Vector(0, case_width - wall_thickness, z_hook_base - support_height),
+                        App.Vector(0, case_width - wall_thickness, z_hook_base),
+                        App.Vector(0, case_width - wall_thickness - snap_hook_thickness, z_hook_base)
+                    ]
+                    wire = Part.makePolygon(tri_pts + [tri_pts[0]])
+                    tri_face = Part.Face(wire)
+                    tri = tri_face.extrude(App.Vector(left_width, 0, 0))
+                    tri = tri.translate(App.Vector(left_pos - left_width / 2.0, 0, 0))
+                    try:
+                        shell = shell.fuse(tri)
+                    except:
+                        pass
+                
+                if right_width > 2.0:
+                    right_pos = usb_hole_right + right_width / 2.0
+                    tri_pts = [
+                        App.Vector(0, case_width - wall_thickness, z_hook_base - support_height),
+                        App.Vector(0, case_width - wall_thickness, z_hook_base),
+                        App.Vector(0, case_width - wall_thickness - snap_hook_thickness, z_hook_base)
+                    ]
+                    wire = Part.makePolygon(tri_pts + [tri_pts[0]])
+                    tri_face = Part.Face(wire)
+                    tri = tri_face.extrude(App.Vector(right_width, 0, 0))
+                    tri = tri.translate(App.Vector(right_pos - right_width / 2.0, 0, 0))
+                    try:
+                        shell = shell.fuse(tri)
+                    except:
+                        pass
             
         elif side == 'bottom':
             # Triangle in Y-Z plane: extrude along X across tab width
@@ -498,7 +598,7 @@ except Exception as ex:
 # L-shaped tabs in each corner that extend from bottom to 3mm above wall top for easy printing
 tab_arm_width = 2.0  # Width of each arm of the L
 tab_arm_length = 6.0  # Length of each arm of the L
-tab_protrusion_above = 3.0  # Height extending above wall top
+tab_protrusion_above = 6.0  # Height extending above wall top
 tab_total_height = (case_height - bottom_thickness) + tab_protrusion_above  # Full height from bottom
 
 # Bottom-left corner - arms extend right and up

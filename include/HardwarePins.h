@@ -126,7 +126,7 @@ const unsigned long FACTORY_RESET_PRESS_TIME = 10000;   // 10 seconds for factor
 // ============================================================================
 #define PROJECT_NAME_SHORT "Smart Thermostat Alt Firmware"
 #define UI_PRODUCT_LINE "Smart Thermostat Alt Firmware"
-#define DEFAULT_HOSTNAME "Smart-Thermostat-Alt-Firmware"
+#define DEFAULT_HOSTNAME "Smart-Thermostat"
 #define MQTT_MANUFACTURER "Tah Der"
 #define MQTT_MODEL "Truly Smart Thermostat"
 

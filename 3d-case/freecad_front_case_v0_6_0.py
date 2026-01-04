@@ -64,7 +64,7 @@ ldr_y = wall_thickness + pcb_clearance + 71.100
 
 sensor_box_width = 20.0
 sensor_box_height = 15.0
-sensor_box_depth = 16.0
+sensor_box_depth = 18.0
 sensor_box_wall = 1.5
 # AHT20 abs: (208.75, 145.78) → rel to bbox min: (98.068, 79.870)
 sensor_x = wall_thickness + pcb_clearance + 98.068
@@ -82,6 +82,15 @@ boot_y = wall_thickness + pcb_clearance + 61.598
 corner_r = 4.0
 face_edge_radius = 4.0  # Outer fillet radius at face/wall junction
 inner_face_edge_radius = 0.5  # Smaller radius for inner reinforcement fillet (to avoid BRep failures)
+
+# USB port hole (bottom wall for cable access)
+# J1 (USB-C connector) abs: (169.97, 144.925) → rel to bbox min: (59.288, 79.015)
+usb_rel_x = 59.288
+usb_rel_y = 79.015
+usb_case_x = wall_thickness + pcb_clearance + usb_rel_x
+usb_case_y = wall_thickness + pcb_clearance + usb_rel_y
+usb_width = 13.0  # USB-C connector is ~8.5mm wide; add clearance
+usb_height = 7.0  # USB-C connector is ~6.5mm tall; add clearance
 
 # Snap-fit parameters - tabs on front case rim that clip into back wall catches
 snap_tab_width = 12.0      # Width of snap tab
@@ -347,6 +356,14 @@ for i in range(vent_slot_count_side):
         App.Console.PrintMessage("Cut right vent slot %d\n" % i)
     except Exception as ex:
         App.Console.PrintWarning("Right vent slot %d failed: %s\n" % (i, ex))
+
+# ---------- USB port hole (top wall) ----------
+# Cut a rectangular opening in the top wall for USB-C connector access
+# Position at top of wall for cable clearance
+usb_hole = Part.makeBox(usb_width, wall_thickness + 0.2, usb_height)
+usb_hole.translate(App.Vector(usb_case_x - usb_width / 2.0, case_width - wall_thickness - 0.1, case_height - usb_height))
+shell = shell.cut(usb_hole)
+App.Console.PrintMessage("Cut USB port hole on top wall (at top of wall)\n")
 
 # ---------- Add standoffs ----------
 # Identify the standoff closest to the display opening center

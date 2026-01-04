@@ -1421,7 +1421,7 @@ void loop()
         // Debug: Log all touches for diagnosis
         // Ignore touches on the edges of the display (deadzone for case edge artifacts)
         // ILI9341 display is 320x240, add a 5-pixel deadzone on all edges to filter case pressure
-        const int TOUCH_DEADZONE = 5;
+        const int TOUCH_DEADZONE = 0;
         
         unsigned long currentTime = millis();
         if (currentTime - lastTouchDebug > 500) {
