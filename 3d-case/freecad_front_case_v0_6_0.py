@@ -67,7 +67,7 @@ sensor_box_height = 15.0
 sensor_box_depth = 18.0
 sensor_box_wall = 1.5
 # AHT20 abs: (208.75, 145.78) → rel to bbox min: (98.068, 79.870)
-sensor_x = wall_thickness + pcb_clearance + 98.068
+sensor_x = wall_thickness + pcb_clearance + 98.068 + 0.5
 sensor_y = wall_thickness + pcb_clearance + 79.870
 
 # Button holes (positions from Thermostat.kicad_pcb V0.6.0)
@@ -83,6 +83,9 @@ corner_r = 4.0
 face_edge_radius = 4.0  # Outer fillet radius at face/wall junction
 inner_face_edge_radius = 0.5  # Smaller radius for inner reinforcement fillet (to avoid BRep failures)
 
+# Alignment pin holes for case assembly
+pin_hole_diameter = 1.0
+
 # USB port hole (bottom wall for cable access)
 # J1 (USB-C connector) abs: (169.97, 144.925) → rel to bbox min: (59.288, 79.015)
 usb_rel_x = 59.288
@@ -91,24 +94,6 @@ usb_case_x = wall_thickness + pcb_clearance + usb_rel_x
 usb_case_y = wall_thickness + pcb_clearance + usb_rel_y
 usb_width = 13.0  # USB-C connector is ~8.5mm wide; add clearance
 usb_height = 7.0  # USB-C connector is ~6.5mm tall; add clearance
-
-# Snap-fit parameters - tabs on front case rim that clip into back wall catches
-snap_tab_width = 12.0      # Width of snap tab
-snap_tab_length = 6.0      # How far tab extends inward from rim (flex length)
-snap_tab_height = 2.5      # Height/thickness of snap tab (strength)
-snap_tab_undercut = 1.0    # Undercut depth for locking
-snap_slot_clearance = 0.2  # Clearance for easy snapping
-snap_latch_overtravel = 5.0  # Tab tip protrusion above wall (mm)
-add_tab_print_supports = True
-tab_support_thickness = 0.6  # thin sacrificial rib thickness
-
-# Snap tab positions - 4 tabs on inside rim (top, bottom, left, right center)
-snap_positions = [
-    {'side': 'top', 'pos': case_length / 2.0},     # Top center
-    {'side': 'bottom', 'pos': case_length / 2.0},  # Bottom center
-    {'side': 'left', 'pos': case_width / 2.0},     # Left center
-    {'side': 'right', 'pos': case_width / 2.0}     # Right center
-]
 
 # ---------- Helpers ----------
 TOL = 1e-6
@@ -291,7 +276,7 @@ if display_edges:
 vent_slot_count = 15
 vent_slot_length = 8.0
 vent_slot_width = 2.0
-vent_slot_height = 20.0
+vent_slot_height = 9.0  # Reduced depth to avoid cutting into sensor box
 vent_spacing = 10.5  # Match back case spacing for alignment
 vent_corner_margin = 15.0  # Skip vents near corners for strength
 for i in range(vent_slot_count):
@@ -445,89 +430,27 @@ for idx, hole in enumerate(pcb_mount_holes):
     except Exception as ex:
         App.Console.PrintWarning("Standoff fuse failed: %s\n" % ex)
 
-# ---------- Cut latch windows in front walls (BEFORE MIRROR) ----------
-window_clearance = 0.2
-latch_window_width = snap_tab_width + 2 * window_clearance
-latch_window_height = snap_tab_height + window_clearance
-latch_window_depth = 3.0  # Shallow recess into wall from inside
-latch_hole_diameter = 2.0  # Small hole for hook/tab push-through
-latch_hole_z_offset = 3.0  # Move hole center downward without moving window
-# Move windows down the sidewall by 4 mm
-z_window = case_height - latch_window_height - (0.6 + 4.0)
-for snap in snap_positions:
-    side = snap['side']
-    pos = snap['pos']
-    if side == 'top':
-        # Top wall: interior surface at y=case_width-wall_thickness, recess outward into wall
-        # Window goes from (case_width-wall_thickness) to (case_width-wall_thickness+latch_window_depth)
-        window = Part.makeBox(latch_window_width, latch_window_depth, latch_window_height)
-        window.translate(App.Vector(pos - latch_window_width / 2.0,
-                                    case_width - wall_thickness,
-                                    z_window))
-        # Hole through full wall thickness pointing inward
-        hole = Part.makeCylinder(latch_hole_diameter / 2.0, wall_thickness + 4,
-                                 App.Vector(pos, case_width + 2, z_window + latch_window_height / 2.0 + latch_hole_z_offset),
-                                 App.Vector(0, -1, 0))
-        try:
-            shell = shell.cut(window)
-            shell = shell.cut(hole)
-            App.Console.PrintMessage("Cut latch window and hole on top wall\n")
-        except Exception as ex:
-            App.Console.PrintWarning("Top latch window cut failed: %s\n" % ex)
-            
-    elif side == 'bottom':
-        # Bottom wall: interior surface at y=wall_thickness, recess backward into wall
-        # Window goes from (wall_thickness-latch_window_depth) to (wall_thickness)
-        window = Part.makeBox(latch_window_width, latch_window_depth, latch_window_height)
-        window.translate(App.Vector(pos - latch_window_width / 2.0,
-                                    wall_thickness - latch_window_depth,
-                                    z_window))
-        # Hole through full wall thickness pointing inward
-        hole = Part.makeCylinder(latch_hole_diameter / 2.0, wall_thickness + 4,
-                                 App.Vector(pos, -2, z_window + latch_window_height / 2.0 + latch_hole_z_offset),
-                                 App.Vector(0, 1, 0))
-        try:
-            shell = shell.cut(window)
-            shell = shell.cut(hole)
-            App.Console.PrintMessage("Cut latch window and hole on bottom wall\n")
-        except Exception as ex:
-            App.Console.PrintWarning("Bottom latch window cut failed: %s\n" % ex)
-            
-    elif side == 'left':
-        # Left wall: interior surface at x=wall_thickness, recess inward (toward cavity)
-        # Window goes from (wall_thickness-latch_window_depth) to (wall_thickness)
-        window = Part.makeBox(latch_window_depth, latch_window_width, latch_window_height)
-        window.translate(App.Vector(wall_thickness - latch_window_depth,
-                                    pos - latch_window_width / 2.0,
-                                    z_window))
-        # Hole pointing inward toward cavity (+X direction)
-        hole = Part.makeCylinder(latch_hole_diameter / 2.0, wall_thickness + 2,
-                                 App.Vector(-2, pos, z_window + latch_window_height / 2.0 + latch_hole_z_offset),
-                                 App.Vector(1, 0, 0))
-        try:
-            shell = shell.cut(window)
-            shell = shell.cut(hole)
-            App.Console.PrintMessage("Cut latch window and hole on left wall\n")
-        except Exception as ex:
-            App.Console.PrintWarning("Left latch window cut failed: %s\n" % ex)
-            
-    elif side == 'right':
-        # Right wall: interior surface at x=case_length-wall_thickness, recess outward into wall
-        # Window goes from (case_length-wall_thickness) to (case_length-wall_thickness+latch_window_depth)
-        window = Part.makeBox(latch_window_depth, latch_window_width, latch_window_height)
-        window.translate(App.Vector(case_length - wall_thickness,
-                                    pos - latch_window_width / 2.0,
-                                    z_window))
-        hole = Part.makeCylinder(latch_hole_diameter / 2.0, wall_thickness + 2,
-                                 App.Vector(case_length + 2, pos, z_window + latch_window_height / 2.0 + latch_hole_z_offset),
-                                 App.Vector(-1, 0, 0))
-        try:
-            shell = shell.cut(window)
-            shell = shell.cut(hole)
-            App.Console.PrintMessage("Cut latch window and hole on right wall\n")
-        except Exception as ex:
-            App.Console.PrintWarning("Right latch window cut failed: %s\n" % ex)
 
+# Add alignment pin holes on side walls (horizontal holes through wall thickness) BEFORE rotation
+# Left side wall pin hole - drilled horizontally from outside edge
+left_pin_x = -0.1  # Start outside the left wall
+left_pin_y = case_width / 2.0
+left_pin_z = case_height - 3.0  # Place TOP of 1mm hole ~2.5mm below wall top
+left_pin = Part.makeCylinder(pin_hole_diameter / 2.0, wall_thickness + 5.0, 
+                              App.Vector(left_pin_x, left_pin_y, left_pin_z), 
+                              App.Vector(1, 0, 0))
+shell = shell.cut(left_pin)
+App.Console.PrintMessage("Cut left side alignment pin hole\n")
+
+# Right side wall pin hole - drilled horizontally from outside edge
+right_pin_x = case_length + 0.1  # Start outside the right wall
+right_pin_y = case_width / 2.0
+right_pin_z = case_height - 3.0  # Place TOP of 1mm hole ~2.5mm below wall top
+right_pin = Part.makeCylinder(pin_hole_diameter / 2.0, wall_thickness + 5.0, 
+                               App.Vector(right_pin_x, right_pin_y, right_pin_z), 
+                               App.Vector(-1, 0, 0))
+shell = shell.cut(right_pin)
+App.Console.PrintMessage("Cut right side alignment pin hole\n")
 
 # ---------- Rotate entire shell 180° around Z-axis ----------
 # Rotate 180° around vertical Z-axis to flip face front-to-back
