@@ -6,8 +6,6 @@
 .pio/build/
 *.o
 *.d
-*.bin
-*.elf
 *.map
 *.a
 *.checksum
