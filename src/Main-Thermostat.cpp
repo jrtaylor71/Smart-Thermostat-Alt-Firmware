@@ -33,6 +33,7 @@
 #include <Adafruit_AHTX0.h>
 #include <DHT.h>
 #include <Adafruit_BME280.h>
+#include <Adafruit_BME680.h>
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
 #include <PubSubClient.h> // Include the MQTT library
@@ -50,6 +51,12 @@
 #include "HardwarePins.h" // Hardware pin definitions
 #include "SettingsUI.h"
 
+// Version control information
+const String sw_version = "1.4.001"; // Software version
+const String build_date = __DATE__;  // Compile date
+const String build_time = __TIME__;  // Compile time
+String version_info = sw_version + " (" + build_date + " " + build_time + ")";
+
 // Constants
 const int SECONDS_PER_HOUR = 3600;
 const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
@@ -59,18 +66,22 @@ enum SensorType {
     SENSOR_NONE = 0,
     SENSOR_AHT20 = 1,
     SENSOR_DHT11 = 2,
-    SENSOR_BME280 = 3
+    SENSOR_BME280 = 3,
+    SENSOR_BME680 = 4
 };
 
 // Sensor instances (only one will be active based on auto-detection)
 Adafruit_AHTX0 aht;
 DHT dht(I2C_SCL_PIN, DHT11); // DHT11 uses GPIO35 (SCL pin) as data line
 Adafruit_BME280 bme;
+Adafruit_BME680 bme680;
 
 // Active sensor tracking
 SensorType activeSensor = SENSOR_NONE;
 String sensorName = "None";
-float currentPressure = 0.0; // Barometric pressure (BME280 only, in hPa)
+float currentPressure = 0.0; // Barometric pressure (BME280/BME680 only, in hPa)
+float currentGasResistance = 0.0; // Gas resistance (BME680 only, in kOhms)
+float currentAirQuality = 0.0; // Approximate air quality index (BME680 only, 0-500)
 
 // Hardware pin definitions moved to HardwarePins.h
 // BOOT_BUTTON, LD2410 pins, ONE_WIRE_BUS, LIGHT_SENSOR_PIN, TFT_BACKLIGHT_PIN all defined there
@@ -101,6 +112,8 @@ bool hydronicLockout = false; // Track hydronic safety lockout state
 int lastLightReading = 0; // Last light sensor reading
 unsigned long lastBrightnessUpdate = 0; // Last time brightness was updated
 int currentBrightness = MAX_BRIGHTNESS; // Current backlight brightness
+float filteredBrightness = 255.0; // EMA-filtered brightness for smooth transitions
+const float brightnessEMAAlpha = 0.2; // Brightness smoothing factor (0.2 = 20% new, 80% previous)
 // Display sleep mode settings
 bool displaySleepEnabled = true; // Enable/disable display sleep mode
 unsigned long displaySleepTimeout = 300000; // Sleep after 5 minutes (300000ms) of inactivity
@@ -139,6 +152,8 @@ Weather weather; // Weather object
 unsigned long stage1MinRuntime = 300; // Default minimum runtime for first stage in seconds (5 minutes)
 float stage2TempDelta = 2.0; // Default temperature delta for second stage activation
 unsigned long stage1StartTime = 0; // Time when stage 1 was activated
+unsigned long stage2StartTime = 0; // Time when stage 2 was activated (for min runtime tracking)
+const unsigned long STAGE2_MIN_RUNTIME = 60000; // Minimum 60 seconds before stage 2 can deactivate
 bool stage1Active = false; // Flag to track if stage 1 is active
 bool stage2Active = false; // Flag to track if stage 2 is active
 bool stage2HeatingEnabled = false; // Enable/disable 2nd stage heating
@@ -225,12 +240,6 @@ bool showerModeEnabled = false; // Master enable/disable for shower mode feature
 int showerModeDuration = 30; // Duration in minutes (default 30)
 bool showerModeActive = false;
 unsigned long showerModeStartTime = 0;
-
-// Version control information
-const String sw_version = "1.4.0"; // Software version
-const String build_date = __DATE__;  // Compile date
-const String build_time = __TIME__;  // Compile time
-String version_info = sw_version + " (" + build_date + " " + build_time + ")";
 
 // Modern Material Design Color Scheme
 #define COLOR_BACKGROUND   0x1082    // Dark Gray #121212
@@ -372,6 +381,7 @@ SemaphoreHandle_t displayUpdateMutex = NULL;
 SemaphoreHandle_t controlRelaysMutex = NULL;
 SemaphoreHandle_t radarSensorMutex = NULL;
 SemaphoreHandle_t i2cMutex = NULL; // Protect I2C bus access (AHT20 sensor)
+SemaphoreHandle_t nvsSaveMutex = NULL; // Protect NVS/preferences save operations (dual-core safety)
 
 // Diagnostics
 void logRuntimeDiagnostics();
@@ -477,8 +487,8 @@ void sensorTaskFunction(void *parameter) {
             currentTemp = filteredTemp;
             currentHumidity = filteredHumidity;
             
-            // Update pressure if BME280 sensor and valid reading
-            if (activeSensor == SENSOR_BME280 && !isnan(pressureReading)) {
+            // Update pressure if BME280/BME680 sensor and valid reading
+            if ((activeSensor == SENSOR_BME280 || activeSensor == SENSOR_BME680) && !isnan(pressureReading)) {
                 currentPressure = pressureReading;
             }
         }
@@ -603,6 +613,19 @@ SensorType detectSensor() {
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     delay(100);
     
+    // Try BME680 first (has more features)
+    debugLog("[SENSOR] Checking for BME680 at I2C address 0x76...\n");
+    if (bme680.begin(0x76)) {
+        debugLog("[SENSOR] BME680 detected at address 0x76!\n");
+        return SENSOR_BME680;
+    }
+    
+    debugLog("[SENSOR] Checking for BME680 at I2C address 0x77...\n");
+    if (bme680.begin(0x77)) {
+        debugLog("[SENSOR] BME680 detected at address 0x77!\n");
+        return SENSOR_BME680;
+    }
+    
     // Try AHT20 (I2C address 0x38)
     debugLog("[SENSOR] Checking for AHT20 at I2C address 0x38...\n");
     if (aht.begin()) {
@@ -649,7 +672,8 @@ bool initializeSensor(SensorType sensor) {
     debugLog("[SENSOR] Initializing %s sensor...\n", 
                   sensor == SENSOR_AHT20 ? "AHT20" : 
                   sensor == SENSOR_DHT11 ? "DHT11" : 
-                  sensor == SENSOR_BME280 ? "BME280" : "NONE");
+                  sensor == SENSOR_BME280 ? "BME280" :
+                  sensor == SENSOR_BME680 ? "BME680" : "NONE");
     
     switch(sensor) {
         case SENSOR_AHT20:
@@ -688,8 +712,20 @@ bool initializeSensor(SensorType sensor) {
             debugLog("[SENSOR] BME280 initialization failed\n");
             return false;
             
-        default:
-            sensorName = "None";
+        case SENSOR_BME680:
+            Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+            if (bme680.begin(0x76) || bme680.begin(0x77)) {
+                // Configure BME680 for indoor monitoring
+                bme680.setTemperatureOversampling(BME680_OS_8X);
+                bme680.setHumidityOversampling(BME680_OS_2X);
+                bme680.setPressureOversampling(BME680_OS_4X);
+                bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
+                bme680.setGasHeater(320, 150); // 320°C heater temp, 150ms heating duration
+                debugLog("[SENSOR] BME680 initialized successfully\n");
+                sensorName = "BME680";
+                return true;
+            }
+            debugLog("[SENSOR] BME680 initialization failed\n");
             return false;
     }
 }
@@ -741,6 +777,35 @@ bool readTemperatureHumidity(float &temp, float &humidity, float &pressure) {
                 return false;
             }
             return true;
+        }
+        
+        case SENSOR_BME680: {
+            if (i2cMutex == NULL || xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                return false;
+            }
+            
+            if (bme680.performReading()) {
+                temp = bme680.temperature;
+                humidity = bme680.humidity;
+                pressure = bme680.pressure / 100.0F; // Convert Pa to hPa
+                currentGasResistance = bme680.gas_resistance / 1000.0F; // Convert Ohms to kOhms
+                
+                // Simple air quality estimate based on gas resistance
+                // Lower resistance = more volatile compounds = worse air quality
+                // Baseline ~5-10 kOhm for clean air, ~0.5 kOhm for polluted air
+                if (currentGasResistance > 0) {
+                    // Scale 0.5-10 kOhm to 0-500 IAQ score
+                    currentAirQuality = (currentGasResistance - 0.5) * (500.0 / (10.0 - 0.5));
+                    currentAirQuality = constrain(currentAirQuality, 0, 500);
+                } else {
+                    currentAirQuality = 0;
+                }
+                
+                xSemaphoreGive(i2cMutex);
+                return true;
+            }
+            xSemaphoreGive(i2cMutex);
+            return false;
         }
         
         default:
@@ -881,6 +946,15 @@ void applySchedule(int dayOfWeek, bool isDayPeriod) {
 
 // Save schedule settings to preferences
 void saveScheduleSettings() {
+    // Acquire mutex for atomic save operation (dual-core safety)
+    if (nvsSaveMutex == NULL || xSemaphoreTake(nvsSaveMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        debugLog("ERROR: saveScheduleSettings() timed out waiting for NVS mutex\n");
+        return;
+    }
+    
+    debugLog("SCHEDULE: Starting atomic save operation...\n");
+    unsigned long saveStartTime = millis();
+    
     preferences.putBool("schedEnabled", scheduleEnabled);
     preferences.putBool("schedOverride", scheduleOverride);
     preferences.putULong("overrideEnd", overrideEndTime);
@@ -909,7 +983,23 @@ void saveScheduleSettings() {
         preferences.putBool((dayPrefix + "n_active").c_str(), weekSchedule[day].night.active);
     }
     
-    debugLog("SCHEDULE: Settings saved to preferences\n");
+    // Verify critical schedule settings were saved
+    bool verifySuccess = true;
+    bool verifySched = preferences.getBool("schedEnabled", !scheduleEnabled);
+    
+    if (verifySched != scheduleEnabled) {
+        verifySuccess = false;
+        debugLog("ERROR: Schedule verification FAILED—save may not have persisted!\n");
+    } else {
+        debugLog("SCHEDULE: Verification SUCCESS—schedule data confirmed in NVS\n");
+    }
+    
+    unsigned long saveDuration = millis() - saveStartTime;
+    debugLog("SCHEDULE: Atomic save completed in %lu ms (status=%s)\n", 
+             saveDuration, verifySuccess ? "OK" : "FAILED");
+    
+    // Release mutex
+    xSemaphoreGive(nvsSaveMutex);
 }
 
 // Load schedule settings from preferences
@@ -1051,6 +1141,13 @@ void setup()
 
     // Initialize Preferences
     preferences.begin("thermostat", false);
+    
+    // Create NVS save semaphore for dual-core safety
+    nvsSaveMutex = xSemaphoreCreateMutex();
+    if (nvsSaveMutex == NULL) {
+        debugLog("ERROR: Failed to create NVS save mutex!\n");
+    }
+    
     loadSettings();
     loadScheduleSettings();
 
@@ -1074,7 +1171,9 @@ void setup()
     // Initialize TFT backlight with PWM (GPIO 14)
     ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
     ledcAttachPin(TFT_BACKLIGHT_PIN, PWM_CHANNEL);
-    setBrightness(MAX_BRIGHTNESS); // Start at full brightness
+    // Start at full brightness
+    setBrightness(MAX_BRIGHTNESS);
+    filteredBrightness = MAX_BRIGHTNESS; // Initialize EMA filter
     
     // Initialize light sensor pin
     pinMode(LIGHT_SENSOR_PIN, INPUT);
@@ -2143,7 +2242,6 @@ void handleButtonPress(uint16_t x, uint16_t y)
             scheduleOverride = true;
             overrideEndTime = millis() + (scheduleOverrideDuration * 60000UL);
             debugLog("SCHEDULE: Override enabled due to manual temperature adjustment\n");
-            saveScheduleSettings();
         }
         
         if (thermostatMode == "heat")
@@ -2177,6 +2275,7 @@ void handleButtonPress(uint16_t x, uint16_t y)
             if (setTempAuto < 50) setTempAuto = 50;
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempAuto", String(setTempAuto).c_str(), true);
         }
+        // Single atomic save of all settings (including schedule override if set above)
         saveSettings();
         sendMQTTData();
         // Update display immediately for better responsiveness
@@ -2189,7 +2288,6 @@ void handleButtonPress(uint16_t x, uint16_t y)
             scheduleOverride = true;
             overrideEndTime = millis() + (scheduleOverrideDuration * 60000UL);
             debugLog("SCHEDULE: Override enabled due to manual temperature adjustment\n");
-            saveScheduleSettings();
         }
         
         if (thermostatMode == "heat")
@@ -2223,23 +2321,11 @@ void handleButtonPress(uint16_t x, uint16_t y)
             if (setTempAuto < 50) setTempAuto = 50;
             if (!handlingMQTTMessage) mqttClient.publish("thermostat/setTempAuto", String(setTempAuto).c_str(), true);
         }
-        unsigned long beforeSave2 = millis();
-        debugLog("[DEBUG] Before saveSettings (- button)\n");
+        // Single atomic save of all settings (including schedule override if set above)
         saveSettings();
-        unsigned long afterSave2 = millis();
-        debugLog("[DEBUG] After saveSettings (took %lu ms)\n", afterSave2 - beforeSave2);
-        
         sendMQTTData();
-        unsigned long afterMQTT2 = millis();
-        debugLog("[DEBUG] After sendMQTTData (took %lu ms)\n", afterMQTT2 - afterSave2);
-        
         // Update display immediately for better responsiveness
-        unsigned long beforeDisplay2 = millis();
-        debugLog("[DEBUG] Before updateDisplay (- button)\n");
         updateDisplay(currentTemp, currentHumidity);
-        unsigned long afterDisplay2 = millis();
-        debugLog("[DEBUG] After updateDisplay (took %lu ms)\n", afterDisplay2 - beforeDisplay2);
-        debugLog("[DEBUG] Total - button time: %lu ms\n", afterDisplay2 - startTime);
     }
     else if (x > 125 && x < 195 && y > 195 && y < 245) // Mode button with slightly increased touch area
     {
@@ -2312,10 +2398,16 @@ void reconnectMQTT()
             String modeSetTopic = hostname + "/mode/set";
             String fanModeSetTopic = hostname + "/fan_mode/set";
             String showerModeSetTopic = hostname + "/shower_mode/set";
+            String scheduleEnabledSetTopic = hostname + "/schedule_enabled/set";
+            String scheduleOverrideSetTopic = hostname + "/schedule_override/set";
+            String scheduleSetTopic = hostname + "/schedule/set";
             mqttClient.subscribe(tempSetTopic.c_str());
             mqttClient.subscribe(modeSetTopic.c_str());
             mqttClient.subscribe(fanModeSetTopic.c_str());
             mqttClient.subscribe(showerModeSetTopic.c_str());
+            mqttClient.subscribe(scheduleEnabledSetTopic.c_str());
+            mqttClient.subscribe(scheduleOverrideSetTopic.c_str());
+            mqttClient.subscribe(scheduleSetTopic.c_str());
 
             // Publish Home Assistant discovery messages
             publishHomeAssistantDiscovery();
@@ -2502,6 +2594,191 @@ void publishHomeAssistantDiscovery()
             mqttClient.publish(showerConfigTopic.c_str(), "", true);
             debugLog("Removed Shower Mode switch discovery from Home Assistant (disabled)\n");
         }
+        
+        // Publish schedule enabled switch discovery
+        StaticJsonDocument<512> scheduleDoc;
+        String scheduleConfigTopic = "homeassistant/switch/" + hostname + "_schedule_enabled/config";
+        
+        scheduleDoc["name"] = "Schedule Enabled";
+        scheduleDoc["state_topic"] = hostname + "/schedule_enabled";
+        scheduleDoc["command_topic"] = hostname + "/schedule_enabled/set";
+        scheduleDoc["payload_on"] = "on";
+        scheduleDoc["payload_off"] = "off";
+        scheduleDoc["state_on"] = "on";
+        scheduleDoc["state_off"] = "off";
+        scheduleDoc["unique_id"] = hostname + "_schedule_enabled";
+        scheduleDoc["icon"] = "mdi:calendar-clock";
+        
+        // Link to same device as main thermostat
+        JsonObject scheduleDevice = scheduleDoc.createNestedObject("device");
+        scheduleDevice["identifiers"][0] = hostname;
+        scheduleDevice["name"] = hostname;
+        scheduleDevice["model"] = PROJECT_NAME_SHORT;
+        scheduleDevice["manufacturer"] = "TDC";
+        scheduleDevice["sw_version"] = sw_version;
+        
+        char scheduleBuffer[512];
+        serializeJson(scheduleDoc, scheduleBuffer);
+        mqttClient.publish(scheduleConfigTopic.c_str(), scheduleBuffer, true);
+        
+        debugLog("Published Schedule Enabled switch discovery to Home Assistant\n");
+        
+        // Publish schedule data sensors and controls for each day/period
+        // dayNames order matches weekSchedule array: 0=Sunday, 1=Monday, ..., 6=Saturday
+        const char* dayNames[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        const char* periodIds[2] = {"day", "night"};
+        const char* periodNames[2] = {"Day", "Night"};
+        const char* periodKeys[2] = {"day_period", "night_period"};
+        
+        for (int day = 0; day < 7; day++) {
+            String dayLower = String(dayNames[day]);
+            dayLower.toLowerCase();
+            String scheduleStateTopic = hostname + "/schedule/" + dayLower;
+
+            // Sensor with full JSON attributes
+            {
+                StaticJsonDocument<512> scheduleDataDoc;
+                String scheduleDataConfigTopic = "homeassistant/sensor/" + hostname + "_schedule_" + dayLower + "/config";
+                
+                scheduleDataDoc["name"] = String("Schedule ") + dayNames[day];
+                scheduleDataDoc["state_topic"] = scheduleStateTopic;
+                scheduleDataDoc["value_template"] = "{{ value_json.day_name }}";
+                scheduleDataDoc["json_attributes_topic"] = scheduleStateTopic;
+                scheduleDataDoc["unique_id"] = hostname + "_schedule_" + dayLower;
+                scheduleDataDoc["icon"] = "mdi:calendar-clock";
+                
+                JsonObject scheduleDataDevice = scheduleDataDoc.createNestedObject("device");
+                scheduleDataDevice["identifiers"][0] = hostname;
+                scheduleDataDevice["name"] = hostname;
+                scheduleDataDevice["model"] = PROJECT_NAME_SHORT;
+                scheduleDataDevice["manufacturer"] = "TDC";
+                scheduleDataDevice["sw_version"] = sw_version;
+                
+                char scheduleDataBuffer[512];
+                serializeJson(scheduleDataDoc, scheduleDataBuffer);
+                mqttClient.publish(scheduleDataConfigTopic.c_str(), scheduleDataBuffer, true);
+            }
+
+            // Day enabled switch
+            {
+                StaticJsonDocument<512> dayEnableDoc;
+                String configTopic = "homeassistant/switch/" + hostname + "_schedule_" + dayLower + "_enabled/config";
+                
+                dayEnableDoc["name"] = String("Schedule ") + dayNames[day] + " Enabled";
+                dayEnableDoc["state_topic"] = scheduleStateTopic;
+                dayEnableDoc["value_template"] = "{{ 'ON' if value_json.day_enabled else 'OFF' }}";
+                dayEnableDoc["command_topic"] = hostname + "/schedule/set";
+                dayEnableDoc["command_template"] = String("{\"day\":") + day + ",\"enabled\": {{ 'true' if value == 'ON' else 'false' }} }";
+                dayEnableDoc["payload_on"] = "ON";
+                dayEnableDoc["payload_off"] = "OFF";
+                dayEnableDoc["unique_id"] = hostname + "_schedule_" + dayLower + "_enabled";
+                dayEnableDoc["icon"] = "mdi:toggle-switch";
+                
+                JsonObject dev = dayEnableDoc.createNestedObject("device");
+                dev["identifiers"][0] = hostname;
+                dev["name"] = hostname;
+                dev["model"] = PROJECT_NAME_SHORT;
+                dev["manufacturer"] = "TDC";
+                dev["sw_version"] = sw_version;
+                
+                char buf[512];
+                serializeJson(dayEnableDoc, buf);
+                mqttClient.publish(configTopic.c_str(), buf, true);
+            }
+
+            // Per-period controls
+            for (int p = 0; p < 2; p++) {
+                const char* periodId = periodIds[p];
+                const char* periodName = periodNames[p];
+                const char* periodKey = periodKeys[p];
+
+                // Temperature numbers (heat/cool/auto)
+                const char* tempKeys[3] = {"heat", "cool", "auto"};
+                for (int t = 0; t < 3; t++) {
+                    StaticJsonDocument<512> numDoc;
+                    String configTopic = "homeassistant/number/" + hostname + "_schedule_" + dayLower + "_" + periodId + "_" + tempKeys[t] + "/config";
+                    
+                    char tempFirst = toupper(tempKeys[t][0]);
+                    numDoc["name"] = String("Schedule ") + dayNames[day] + " " + periodName + " " + String(tempFirst) + String(tempKeys[t] + 1);
+                    numDoc["state_topic"] = scheduleStateTopic;
+                    numDoc["value_template"] = String("{{ value_json.") + periodKey + "." + tempKeys[t] + " }}";
+                    numDoc["command_topic"] = hostname + "/schedule/set";
+                    numDoc["command_template"] = String("{\"day\":") + day + ",\"period\":\"" + periodId + "\",\"" + tempKeys[t] + "\":{{ value }}}";
+                    numDoc["min"] = 45; // reasonable bounds
+                    numDoc["max"] = 90;
+                    numDoc["step"] = 0.5;
+                    numDoc["unit_of_measurement"] = "°F";
+                    numDoc["unique_id"] = hostname + "_schedule_" + dayLower + "_" + periodId + "_" + tempKeys[t];
+                    numDoc["mode"] = "box";
+                    
+                    JsonObject dev = numDoc.createNestedObject("device");
+                    dev["identifiers"][0] = hostname;
+                    dev["name"] = hostname;
+                    dev["model"] = PROJECT_NAME_SHORT;
+                    dev["manufacturer"] = "TDC";
+                    dev["sw_version"] = sw_version;
+                    
+                    char buf[512];
+                    serializeJson(numDoc, buf);
+                    mqttClient.publish(configTopic.c_str(), buf, true);
+                }
+
+                // Time text entity (HH:MM)
+                {
+                    StaticJsonDocument<512> timeDoc;
+                    String configTopic = "homeassistant/text/" + hostname + "_schedule_" + dayLower + "_" + periodId + "_time/config";
+                    
+                    timeDoc["name"] = String("Schedule ") + dayNames[day] + " " + periodName + " Time";
+                    timeDoc["state_topic"] = scheduleStateTopic;
+                    timeDoc["value_template"] = String("{{ value_json.") + periodKey + ".time }}";
+                    timeDoc["command_topic"] = hostname + "/schedule/set";
+                    timeDoc["command_template"] = String("{\"day\":") + day + ",\"period\":\"" + periodId + "\",\"hour\": {{ value.split(':')[0] | int }},\"minute\": {{ value.split(':')[1] | int }} }";
+                    timeDoc["pattern"] = "^([01]\\d|2[0-3]):[0-5]\\d$";
+                    timeDoc["unique_id"] = hostname + "_schedule_" + dayLower + "_" + periodId + "_time";
+                    timeDoc["icon"] = "mdi:clock-time-four-outline";
+                    
+                    JsonObject dev = timeDoc.createNestedObject("device");
+                    dev["identifiers"][0] = hostname;
+                    dev["name"] = hostname;
+                    dev["model"] = PROJECT_NAME_SHORT;
+                    dev["manufacturer"] = "TDC";
+                    dev["sw_version"] = sw_version;
+                    
+                    char buf[512];
+                    serializeJson(timeDoc, buf);
+                    mqttClient.publish(configTopic.c_str(), buf, true);
+                }
+
+                // Active switch
+                {
+                    StaticJsonDocument<512> activeDoc;
+                    String configTopic = "homeassistant/switch/" + hostname + "_schedule_" + dayLower + "_" + periodId + "_active/config";
+                    
+                    activeDoc["name"] = String("Schedule ") + dayNames[day] + " " + periodName + " Active";
+                    activeDoc["state_topic"] = scheduleStateTopic;
+                    activeDoc["value_template"] = String("{{ 'ON' if value_json.") + periodKey + ".active else 'OFF' }}";
+                    activeDoc["command_topic"] = hostname + "/schedule/set";
+                    activeDoc["command_template"] = String("{\"day\":") + day + ",\"period\":\"" + periodId + "\",\"active\": {{ 'true' if value == 'ON' else 'false' }} }";
+                    activeDoc["payload_on"] = "ON";
+                    activeDoc["payload_off"] = "OFF";
+                    activeDoc["unique_id"] = hostname + "_schedule_" + dayLower + "_" + periodId + "_active";
+                    activeDoc["icon"] = "mdi:power";
+                    
+                    JsonObject dev = activeDoc.createNestedObject("device");
+                    dev["identifiers"][0] = hostname;
+                    dev["name"] = hostname;
+                    dev["model"] = PROJECT_NAME_SHORT;
+                    dev["manufacturer"] = "TDC";
+                    dev["sw_version"] = sw_version;
+                    
+                    char buf[512];
+                    serializeJson(activeDoc, buf);
+                    mqttClient.publish(configTopic.c_str(), buf, true);
+                }
+            }
+        }
+        
+        debugLog("Published Schedule Data sensors and controls (7 days) discovery to Home Assistant\n");
     }
     else
     {
@@ -2550,6 +2827,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     String fanModeSetTopic = hostname + "/fan_mode/set";
     String tempSetTopic = hostname + "/target_temperature/set";
     String showerModeSetTopic = hostname + "/shower_mode/set";
+    String scheduleEnabledSetTopic = hostname + "/schedule_enabled/set";
+    String scheduleOverrideSetTopic = hostname + "/schedule_override/set";
+    String scheduleSetTopic = hostname + "/schedule/set";
 
     if (String(topic) == modeSetTopic)
     {
@@ -2634,6 +2914,158 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
             }
         }
     }
+    else if (String(topic) == scheduleEnabledSetTopic)
+    {
+        bool newScheduleEnabled = (message == "ON" || message == "on" || message == "1");
+        if (newScheduleEnabled != scheduleEnabled) {
+            scheduleEnabled = newScheduleEnabled;
+            debugLog("SCHEDULE: Via MQTT, enabled=%s\n", scheduleEnabled ? "true" : "false");
+            if (!scheduleEnabled) {
+                // Disable override when schedule is disabled
+                scheduleOverride = false;
+                overrideEndTime = 0;
+                activePeriod = "manual";
+            }
+            scheduleNeedsSaving = true;
+            sendMQTTData(); // Publish updated state back to HA
+        }
+    }
+    else if (String(topic) == scheduleOverrideSetTopic)
+    {
+        if (scheduleEnabled) {
+            if (message == "resume") {
+                if (scheduleOverride) {
+                    scheduleOverride = false;
+                    overrideEndTime = 0;
+                    debugLog("SCHEDULE: Via MQTT, override resumed (schedule active)\n");
+                    scheduleNeedsSaving = true;
+                    sendMQTTData();
+                }
+            } else if (message == "temporary") {
+                if (!scheduleOverride) {
+                    scheduleOverride = true;
+                    overrideEndTime = millis() + (scheduleOverrideDuration * 60000UL);
+                    debugLog("SCHEDULE: Via MQTT, override activated (temporary - 2 hours)\n");
+                    scheduleNeedsSaving = true;
+                    sendMQTTData();
+                }
+            } else if (message == "permanent") {
+                if (!scheduleOverride) {
+                    scheduleOverride = true;
+                    overrideEndTime = 0; // Permanent until manually disabled
+                    debugLog("SCHEDULE: Via MQTT, override activated (permanent)\n");
+                    scheduleNeedsSaving = true;
+                    sendMQTTData();
+                }
+            }
+        }
+    }
+    else if (String(topic) == scheduleSetTopic)
+    {
+        // Parse JSON schedule update
+        // Format: {"day": 0, "period": "day", "hour": 6, "minute": 30, "heat": 72.0, "cool": 78.0, "auto": 74.0, "active": true}
+        // Note: MQTT day format is 0=Monday through 6=Sunday
+        // Array format is 0=Sunday through 6=Saturday
+        // Convert MQTT day (Monday=0) to array index (Sunday=0): add 1 and mod 7
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, message);
+        
+        if (!error) {
+            int mqttDay = doc["day"] | -1;
+            String period = doc["period"] | "";
+            
+            if (mqttDay >= 0 && mqttDay < 7 && (period == "day" || period == "night")) {
+                // Convert MQTT day (0=Monday) to array index (0=Sunday)
+                int day = (mqttDay + 1) % 7;
+                SchedulePeriod* targetPeriod = (period == "day") ? &weekSchedule[day].day : &weekSchedule[day].night;
+                
+                bool changed = false;
+                
+                if (doc.containsKey("hour")) {
+                    int newHour = doc["hour"];
+                    if (newHour >= 0 && newHour <= 23 && newHour != targetPeriod->hour) {
+                        targetPeriod->hour = newHour;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("minute")) {
+                    int newMinute = doc["minute"];
+                    if (newMinute >= 0 && newMinute <= 59 && newMinute != targetPeriod->minute) {
+                        targetPeriod->minute = newMinute;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("heat")) {
+                    float newHeat = doc["heat"];
+                    if (newHeat != targetPeriod->heatTemp) {
+                        targetPeriod->heatTemp = newHeat;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("cool")) {
+                    float newCool = doc["cool"];
+                    if (newCool != targetPeriod->coolTemp) {
+                        targetPeriod->coolTemp = newCool;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("auto")) {
+                    float newAuto = doc["auto"];
+                    if (newAuto != targetPeriod->autoTemp) {
+                        targetPeriod->autoTemp = newAuto;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("active")) {
+                    bool newActive = doc["active"];
+                    if (newActive != targetPeriod->active) {
+                        targetPeriod->active = newActive;
+                        changed = true;
+                    }
+                }
+                
+                if (doc.containsKey("enabled")) {
+                    bool newEnabled = doc["enabled"];
+                    if (newEnabled != weekSchedule[day].enabled) {
+                        weekSchedule[day].enabled = newEnabled;
+                        changed = true;
+                    }
+                }
+                
+                if (changed) {
+                    scheduleNeedsSaving = true;
+                    debugLog("SCHEDULE: Via MQTT, updated day %d (array index %d) %s period\n", mqttDay, day, period.c_str());
+                    
+                    // If schedule is enabled and not overridden, reapply to take effect immediately
+                    if (scheduleEnabled && !scheduleOverride) {
+                        time_t now;
+                        struct tm timeinfo;
+                        time(&now);
+                        localtime_r(&now, &timeinfo);
+                        int currentDay = (timeinfo.tm_wday + 6) % 7; // Convert Sunday=0 to Monday=0
+                        
+                        if (currentDay == day) {
+                            // Current day was modified, reapply schedule
+                            bool isDayPeriod = (period == "day");
+                            applySchedule(day, isDayPeriod);
+                            updateDisplay(currentTemp, currentHumidity);
+                        }
+                    }
+                    
+                    sendMQTTData(); // Publish updated schedule state
+                }
+            } else {
+                debugLog("SCHEDULE: Invalid MQTT schedule update - day=%d, period=%s\n", mqttDay, period.c_str());
+            }
+        } else {
+            debugLog("SCHEDULE: Failed to parse MQTT schedule JSON\n");
+        }
+    }
 
     // Save settings to flash if they were changed
     if (settingsNeedSaving) {
@@ -2678,7 +3110,7 @@ void sendMQTTData()
         }
         
         // Publish barometric pressure if BME280 sensor is active
-        if (activeSensor == SENSOR_BME280 && !isnan(currentPressure))
+        if ((activeSensor == SENSOR_BME280 || activeSensor == SENSOR_BME680) && !isnan(currentPressure))
         {
             static float lastPressure = 0.0;
             if (currentPressure != lastPressure)
@@ -2687,6 +3119,27 @@ void sendMQTTData()
                 float pressureInHg = currentPressure / 33.8639; // Convert hPa to inHg
                 mqttClient.publish(pressureTopic.c_str(), String(pressureInHg, 2).c_str(), true);
                 lastPressure = currentPressure;
+            }
+        }
+        
+        // Publish gas resistance and air quality if BME680 is active
+        if (activeSensor == SENSOR_BME680)
+        {
+            static float lastGasResistance = 0.0;
+            static float lastAirQuality = 0.0;
+            
+            if (currentGasResistance != lastGasResistance)
+            {
+                String gasTopic = hostname + "/gas_resistance";
+                mqttClient.publish(gasTopic.c_str(), String(currentGasResistance, 1).c_str(), true);
+                lastGasResistance = currentGasResistance;
+            }
+            
+            if (currentAirQuality != lastAirQuality)
+            {
+                String aqTopic = hostname + "/air_quality_index";
+                mqttClient.publish(aqTopic.c_str(), String((int)currentAirQuality).c_str(), true);
+                lastAirQuality = currentAirQuality;
             }
         }
 
@@ -2836,6 +3289,56 @@ void sendMQTTData()
         if (scheduleOverride) {
             String overrideTopic = hostname + "/schedule_override";
             mqttClient.publish(overrideTopic.c_str(), "active", false);
+        }
+        
+        // Publish detailed schedule data for all 7 days (for monitoring/debugging)
+        // Format: JSON for each day of the week
+        // Always publish so schedule data is visible even when schedule is disabled
+        time_t now;
+        struct tm timeinfo;
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        int currentDay = (timeinfo.tm_wday + 6) % 7; // Convert Sunday=0 to Monday=0
+        
+        // Publish schedule for each day of the week
+        // dayNames order matches weekSchedule array: 0=Sunday, 1=Monday, ..., 6=Saturday
+        // But we also publish to topics with lowercase day names (monday, tuesday, etc.)
+        const char* dayNames[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        const char* topicDayNames[7] = {"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"};
+        
+        for (int day = 0; day < 7; day++) {
+            StaticJsonDocument<512> schedDoc;
+            // day_index follows MQTT protocol: 0=Monday through 6=Sunday
+            // Convert array index to MQTT index for compatibility
+            int mqttDayIndex = (day - 1 + 7) % 7;  // Convert 0=Sunday to 0=Monday format
+            schedDoc["day_index"] = mqttDayIndex;
+            schedDoc["day_name"] = dayNames[day];
+            schedDoc["is_today"] = (day == currentDay);
+            schedDoc["schedule_enabled"] = scheduleEnabled;
+            schedDoc["day_enabled"] = weekSchedule[day].enabled;
+            
+            JsonObject dayPeriod = schedDoc.createNestedObject("day_period");
+            dayPeriod["time"] = String(weekSchedule[day].day.hour) + ":" + 
+                               (weekSchedule[day].day.minute < 10 ? "0" : "") + 
+                               String(weekSchedule[day].day.minute);
+            dayPeriod["heat"] = weekSchedule[day].day.heatTemp;
+            dayPeriod["cool"] = weekSchedule[day].day.coolTemp;
+            dayPeriod["auto"] = weekSchedule[day].day.autoTemp;
+            dayPeriod["active"] = weekSchedule[day].day.active;
+            
+            JsonObject nightPeriod = schedDoc.createNestedObject("night_period");
+            nightPeriod["time"] = String(weekSchedule[day].night.hour) + ":" + 
+                                 (weekSchedule[day].night.minute < 10 ? "0" : "") + 
+                                 String(weekSchedule[day].night.minute);
+            nightPeriod["heat"] = weekSchedule[day].night.heatTemp;
+            nightPeriod["cool"] = weekSchedule[day].night.coolTemp;
+            nightPeriod["auto"] = weekSchedule[day].night.autoTemp;
+            nightPeriod["active"] = weekSchedule[day].night.active;
+            
+            char schedBuffer[512];
+            serializeJson(schedDoc, schedBuffer);
+            String scheduleDataTopic = hostname + "/schedule/" + String(topicDayNames[day]);
+            mqttClient.publish(scheduleDataTopic.c_str(), schedBuffer, false);
         }
 
         // Publish availability
@@ -3223,12 +3726,23 @@ void activateHeating() {
     }
     // Check if it's time to activate stage 2 based on hybrid approach
     else if (!stage2Active && 
-             ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
-             (currentTemp < setTempHeat - tempSwing - stage2TempDelta) && // Temperature delta condition
+             ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time before stage 2 allowed
+             (currentTemp < setTempHeat - stage2TempDelta) && // Simplified: just use delta, no swing subtraction
              stage2HeatingEnabled) { // Check if stage 2 heating is enabled
-        debugLog("[HVAC] Stage 2 HEATING activated\n");
+        debugLog("[HVAC] Stage 2 HEATING activated (temp %.1f < setpoint %.1f - delta %.1f)\n", 
+                 currentTemp, setTempHeat, stage2TempDelta);
         digitalWrite(HEAT_RELAY_2_PIN, HIGH); // Activate stage 2
         stage2Active = true;
+        stage2StartTime = millis(); // Record when stage 2 started
+    }
+    // Stage 2 DEACTIVATION: When temperature recovers sufficiently while stage 1 continues
+    else if (stage2Active && !reversingValveEnabled &&
+             ((millis() - stage2StartTime) >= STAGE2_MIN_RUNTIME) && // Must run minimum time before deactivation
+             (currentTemp >= setTempHeat - (stage2TempDelta * 0.5))) { // Deactivate at half-delta for hysteresis
+        debugLog("[HVAC] Stage 2 HEATING deactivated (temp %.1f >= setpoint %.1f - half-delta %.1f, runtime %.1fs)\n", 
+                 currentTemp, setTempHeat, (stage2TempDelta * 0.5), (millis() - stage2StartTime) / 1000.0);
+        digitalWrite(HEAT_RELAY_2_PIN, LOW); // Deactivate stage 2
+        stage2Active = false;
     }
     
     // Control fan based on fanRelayNeeded setting
@@ -3299,12 +3813,23 @@ void activateCooling()
     
     // Only activate stage 2 cooling if NOT using reversing valve
     if (!reversingValveEnabled && !stage2Active && 
-            ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time condition
-            (currentTemp > setTempCool + tempSwing + stage2TempDelta) && // Temperature delta condition
+            ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time before stage 2 allowed
+            (currentTemp > setTempCool + stage2TempDelta) && // Simplified: just use delta, no swing addition
             stage2CoolingEnabled) { // Check if stage 2 cooling is enabled
+        debugLog("[HVAC] Stage 2 COOLING activated (temp %.1f > setpoint %.1f + delta %.1f)\n", 
+                 currentTemp, setTempCool, stage2TempDelta);
         digitalWrite(COOL_RELAY_2_PIN, HIGH); // Activate stage 2
         stage2Active = true;
-        debugLog("Stage 2 cooling activated\n");
+        stage2StartTime = millis(); // Record when stage 2 started
+    }
+    // Stage 2 DEACTIVATION: When temperature recovers sufficiently while stage 1 continues
+    else if (stage2Active && !reversingValveEnabled &&
+             ((millis() - stage2StartTime) >= STAGE2_MIN_RUNTIME) && // Must run minimum time before deactivation
+             (currentTemp <= setTempCool + (stage2TempDelta * 0.5))) { // Deactivate at half-delta for hysteresis
+        debugLog("[HVAC] Stage 2 COOLING deactivated (temp %.1f <= setpoint %.1f + half-delta %.1f, runtime %.1fs)\n", 
+                 currentTemp, setTempCool, (stage2TempDelta * 0.5), (millis() - stage2StartTime) / 1000.0);
+        digitalWrite(COOL_RELAY_2_PIN, LOW); // Deactivate stage 2
+        stage2Active = false;
     }
     
     // Control fan based on fanRelayNeeded setting
@@ -3825,43 +4350,6 @@ void handleWebRequests()
         request->send(200, "application/json", "{\"status\": \"success\"}");
     });
 
-    server.on("/reboot", HTTP_GET, [](AsyncWebServerRequest *request)
-              {
-        // Prevent multiple reboot calls
-        if (systemRebootInProgress) {
-            request->send(200, "application/json", "{\"status\": \"already_rebooting\"}");
-            return;
-        }
-        
-        systemRebootInProgress = true;
-        // Send response with immediate connection close (like OTA does)
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", 
-            "<html><head><title>Rebooting</title></head><body>"
-            "<h1>Device Rebooting...</h1>"
-            "<p>Please wait...</p>"
-            "<script>"
-            "setTimeout(function() {"
-            "  var begin = Date.now();"
-            "  var iv = setInterval(function() {"
-            "    fetch('/version').then(r => r.json()).then(j => {"
-            "      window.location.href = '/';"
-            "      clearInterval(iv);"
-            "    }).catch(function() {"
-            "      if (Date.now() - begin > 45000) {"
-            "        window.location.href = '/';"
-            "        clearInterval(iv);"
-            "      }"
-            "    });"
-            "  }, 2000);"
-            "}, 30000);"
-            "</script>"
-            "</body></html>");
-        response->addHeader("Connection", "close");
-        request->send(response);
-        delay(1500);
-        ESP.restart();
-    });
-    
     server.on("/reboot", HTTP_POST, [](AsyncWebServerRequest *request)
               {
         // Prevent multiple reboot calls
@@ -3871,32 +4359,19 @@ void handleWebRequests()
         }
         
         systemRebootInProgress = true;
-        // Send response with immediate connection close (like OTA does)
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", 
-            "<html><head><title>Rebooting</title></head><body>"
-            "<h1>Device Rebooting...</h1>"
-            "<p>Please wait...</p>"
-            "<script>"
-            "setTimeout(function() {"
-            "  var begin = Date.now();"
-            "  var iv = setInterval(function() {"
-            "    fetch('/version').then(r => r.json()).then(j => {"
-            "      window.location.href = '/';"
-            "      clearInterval(iv);"
-            "    }).catch(function() {"
-            "      if (Date.now() - begin > 45000) {"
-            "        window.location.href = '/';"
-            "        clearInterval(iv);"
-            "      }"
-            "    });"
-            "  }, 2000);"
-            "}, 30000);"
-            "</script>"
-            "</body></html>");
+        debugLog("[REBOOT] Reboot requested via web interface\n");
+        
+        // Send simple JSON response and close connection
+        AsyncWebServerResponse *response = request->beginResponse(200, "application/json", 
+            "{\"status\": \"rebooting\"}");
         response->addHeader("Connection", "close");
         request->send(response);
-        delay(1500);
-        ESP.restart();
+        
+        // Defer reboot to a short FreeRTOS task to let the response flush
+        xTaskCreate([](void*) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            ESP.restart();
+        }, "web_reboot", 2048, nullptr, 1, nullptr);
     });
 
     // OTA status JSON for client-side fallback progress polling
@@ -4096,12 +4571,13 @@ void handleWebRequests()
         }
         
         if (settingsChanged) {
-            scheduleUpdatedFlag = true;
+            // Call saveScheduleSettings() directly—no need for flag since new saveSettings() consolidates schedule saves
             saveScheduleSettings();
-            debugLog("SCHEDULE: Settings updated via web interface\n");
+            debugLog("SCHEDULE: Settings updated via web interface (atomic save)\n");
+            request->send(200, "application/json", "{\"status\":\"success\",\"message\":\"Schedule settings saved successfully!\"}");
+        } else {
+            request->send(200, "application/json", "{\"status\":\"success\",\"message\":\"No changes detected\"}");
         }
-        
-        request->send(200, "text/plain", "Schedule settings updated!");
     });
 
     // Weather refresh endpoint for manual force update
@@ -4386,8 +4862,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
         tft.print(humidityStr);
         tft.print("%");
         
-        // Display pressure if BME280 sensor is active (convert hPa to inHg: divide by 33.8639)
-        if (activeSensor == SENSOR_BME280 && !isnan(currentPressure)) {
+        // Display pressure if BME280/BME680 sensor is active (convert hPa to inHg: divide by 33.8639)
+        if ((activeSensor == SENSOR_BME280 || activeSensor == SENSOR_BME680) && !isnan(currentPressure)) {
             tft.setCursor(230, 90); // Pressure at y=90, 30px spacing
             float pressureInHg = currentPressure / 33.8639; // Convert hPa to inHg
             char pressureStr[7];
@@ -4395,8 +4871,19 @@ void updateDisplay(float currentTemp, float currentHumidity)
             tft.print(pressureStr);
             tft.print("in");
         } else {
-            // Clear pressure area if not BME280 or invalid
+            // Clear pressure area if not BME280/BME680 or invalid
             tft.fillRect(230, 90, 80, 16, COLOR_BACKGROUND);
+        }
+        
+        // Display air quality if BME680 sensor is active
+        if (activeSensor == SENSOR_BME680) {
+            tft.setCursor(230, 120); // Air quality at y=120, 30px spacing
+            int aqScore = (int)currentAirQuality;
+            tft.print("AQ:");
+            tft.print(aqScore);
+        } else {
+            // Clear air quality area if not BME680
+            tft.fillRect(230, 120, 80, 16, COLOR_BACKGROUND);
         }
 
         // Update previous values
@@ -4579,44 +5066,16 @@ void updateDisplay(float currentTemp, float currentHumidity)
 
 void saveSettings()
 {
-    debugLog("Saving settings:\n");
-    debugLog("setTempHeat: "); Serial.println(setTempHeat);
-    debugLog("setTempCool: "); Serial.println(setTempCool);
-    debugLog("setTempAuto: "); Serial.println(setTempAuto);
-    debugLog("tempSwing: "); Serial.println(tempSwing);
-    debugLog("autoTempSwing: "); Serial.println(autoTempSwing);
-    debugLog("fanRelayNeeded: "); Serial.println(fanRelayNeeded);
-    debugLog("useFahrenheit: "); Serial.println(useFahrenheit);
-    debugLog("mqttEnabled: "); Serial.println(mqttEnabled);
-    debugLog("fanMinutesPerHour: "); Serial.println(fanMinutesPerHour);
-    debugLog("mqttServer: "); Serial.println(mqttServer);
-    debugLog("mqttPort: "); Serial.println(mqttPort);
-    debugLog("mqttUsername: "); Serial.println(mqttUsername);
-    debugLog("mqttPassword: "); Serial.println(mqttPassword);
-    debugLog("wifiSSID: "); Serial.println(wifiSSID);
-    debugLog("wifiPassword: "); Serial.println(wifiPassword);
-    debugLog("thermostatMode: "); Serial.println(thermostatMode);
-    debugLog("fanMode: "); Serial.println(fanMode);
-    debugLog("timeZone: "); Serial.println(timeZone);
-    debugLog("use24HourClock: "); Serial.println(use24HourClock);
-    debugLog("hydronicHeatingEnabled: "); Serial.println(hydronicHeatingEnabled);
-    debugLog("hydronicTempLow: "); Serial.println(hydronicTempLow);
-    debugLog("hydronicTempHigh: "); Serial.println(hydronicTempHigh);
-    debugLog("hostname: "); Serial.println(hostname);
-    debugLog("stage1MinRuntime: "); Serial.println(stage1MinRuntime);
-    debugLog("stage2TempDelta: "); Serial.println(stage2TempDelta);
-    debugLog("stage2HeatingEnabled: "); Serial.println(stage2HeatingEnabled);
-    debugLog("stage2CoolingEnabled: "); Serial.println(stage2CoolingEnabled);
-    debugLog("reversingValveEnabled: "); Serial.println(reversingValveEnabled);
-    debugLog("weatherSource: "); Serial.println(weatherSource);
-    debugLog("owmApiKey: "); Serial.println(owmApiKey.length() > 0 ? "[SET]" : "[NOT SET]");
-    debugLog("owmCity: "); Serial.println(owmCity);
-    debugLog("owmCountry: "); Serial.println(owmCountry);
-    debugLog("haUrl: "); Serial.println(haUrl);
-    debugLog("haToken: "); Serial.println(haToken.length() > 0 ? "[SET]" : "[NOT SET]");
-    debugLog("haEntityId: "); Serial.println(haEntityId);
-    debugLog("weatherUpdateInterval: "); Serial.println(weatherUpdateInterval);
-
+    // Acquire mutex for atomic save operation (dual-core safety)
+    if (nvsSaveMutex == NULL || xSemaphoreTake(nvsSaveMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        debugLog("ERROR: saveSettings() timed out waiting for NVS mutex\n");
+        return;
+    }
+    
+    debugLog("SETTINGS: Starting atomic save operation...\n");
+    unsigned long saveStartTime = millis();
+    
+    // Save all settings to NVS
     preferences.putFloat("setHeat", setTempHeat);
     preferences.putFloat("setCool", setTempCool);
     preferences.putFloat("setAuto", setTempAuto);
@@ -4664,15 +5123,62 @@ void saveSettings()
     preferences.putBool("showerEn", showerModeEnabled);
     preferences.putInt("showerDur", showerModeDuration);
     
-    // Save schedule settings if flag is set
-    if (scheduleUpdatedFlag) {
-        saveScheduleSettings();
-        scheduleUpdatedFlag = false;
+    // Consolidate schedule saves into main save (atomic)
+    preferences.putBool("schedEnabled", scheduleEnabled);
+    preferences.putBool("schedOverride", scheduleOverride);
+    preferences.putULong("overrideEnd", overrideEndTime);
+    preferences.putString("activePeriod", activePeriod);
+    
+    // Save each day's schedule
+    for (int day = 0; day < 7; day++) {
+        String dayPrefix = "day" + String(day) + "_";
+        
+        preferences.putBool((dayPrefix + "enabled").c_str(), weekSchedule[day].enabled);
+        
+        // Day period
+        preferences.putInt((dayPrefix + "d_hour").c_str(), weekSchedule[day].day.hour);
+        preferences.putInt((dayPrefix + "d_min").c_str(), weekSchedule[day].day.minute);
+        preferences.putFloat((dayPrefix + "d_heat").c_str(), weekSchedule[day].day.heatTemp);
+        preferences.putFloat((dayPrefix + "d_cool").c_str(), weekSchedule[day].day.coolTemp);
+        preferences.putFloat((dayPrefix + "d_auto").c_str(), weekSchedule[day].day.autoTemp);
+        preferences.putBool((dayPrefix + "d_active").c_str(), weekSchedule[day].day.active);
+        
+        // Night period
+        preferences.putInt((dayPrefix + "n_hour").c_str(), weekSchedule[day].night.hour);
+        preferences.putInt((dayPrefix + "n_min").c_str(), weekSchedule[day].night.minute);
+        preferences.putFloat((dayPrefix + "n_heat").c_str(), weekSchedule[day].night.heatTemp);
+        preferences.putFloat((dayPrefix + "n_cool").c_str(), weekSchedule[day].night.coolTemp);
+        preferences.putFloat((dayPrefix + "n_auto").c_str(), weekSchedule[day].night.autoTemp);
+        preferences.putBool((dayPrefix + "n_active").c_str(), weekSchedule[day].night.active);
     }
-
-    // Debug print to confirm settings are saved
-    debugLog("Settings saved.");
+    
+    // Clear flag since we're saving schedule here
+    scheduleUpdatedFlag = false;
+    
+    // Verify critical settings were saved (spot check)
+    bool verifySuccess = true;
+    float verifySetHeat = preferences.getFloat("setHeat", -999.0);
+    float verifySetCool = preferences.getFloat("setCool", -999.0);
+    bool verifySched = preferences.getBool("schedEnabled", !scheduleEnabled);
+    
+    if (verifySetHeat != setTempHeat || verifySetCool != setTempCool || verifySched != scheduleEnabled) {
+        verifySuccess = false;
+        debugLog("ERROR: Settings verification FAILED—save may not have persisted!\n");
+        debugLog("  setHeat: saved=%.1f, verify=%.1f\n", setTempHeat, verifySetHeat);
+        debugLog("  setCool: saved=%.1f, verify=%.1f\n", setTempCool, verifySetCool);
+        debugLog("  schedEnabled: saved=%d, verify=%d\n", scheduleEnabled, verifySched);
+    } else {
+        debugLog("SETTINGS: Verification SUCCESS—all critical values confirmed in NVS\n");
+    }
+    
+    unsigned long saveDuration = millis() - saveStartTime;
+    debugLog("SETTINGS: Atomic save completed in %lu ms (status=%s)\n", 
+             saveDuration, verifySuccess ? "OK" : "FAILED");
+    
+    // Release mutex
+    xSemaphoreGive(nvsSaveMutex);
 }
+
 
 void loadSettings()
 {

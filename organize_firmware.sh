@@ -5,6 +5,28 @@ BUILD_DIR=".pio/build/esp32-s3-wroom-1-n16"
 PROJECT_DIR="$(pwd)"
 FIRMWARE_DIR="$PROJECT_DIR/firmware"
 
+# How many historical firmware builds to keep (default: 1). Set via -k/--keep or KEEP_FIRMWARE env.
+KEEP_FIRMWARE="${KEEP_FIRMWARE:-1}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -k|--keep)
+            KEEP_FIRMWARE="$2"
+            shift 2
+            ;;
+        *)
+            echo "[POST-BUILD] Unknown argument: $1"
+            echo "[POST-BUILD] Usage: ./organize_firmware.sh [-k|--keep <count>]"
+            exit 1
+            ;;
+    esac
+done
+
+if [[ ! "$KEEP_FIRMWARE" =~ ^[0-9]+$ ]] || [[ "$KEEP_FIRMWARE" -lt 1 ]]; then
+    echo "[POST-BUILD] Invalid keep count '$KEEP_FIRMWARE', defaulting to 1"
+    KEEP_FIRMWARE=1
+fi
+
 # Create firmware directory if it doesn't exist
 mkdir -p "$FIRMWARE_DIR"
 
@@ -77,3 +99,16 @@ ln -s "build_$BUILD_TIMESTAMP/partitions.bin" latest_partitions.bin
 ln -s "build_$BUILD_TIMESTAMP/flash.sh" latest_flash.sh
 
 echo "[POST-BUILD] Firmware files organized in: firmware/build_$BUILD_TIMESTAMP"
+
+# Prune old firmware builds, keeping the newest $KEEP_FIRMWARE builds
+cd "$FIRMWARE_DIR"
+mapfile -t BUILD_DIRS < <(ls -1dt build_* 2>/dev/null)
+if [[ ${#BUILD_DIRS[@]} -gt $KEEP_FIRMWARE ]]; then
+    for OLD_DIR in "${BUILD_DIRS[@]:$KEEP_FIRMWARE}"; do
+        rm -rf "$OLD_DIR"
+        echo "[POST-BUILD] Removed old firmware build: $OLD_DIR"
+    done
+fi
+
+# Return to project dir
+cd "$PROJECT_DIR"

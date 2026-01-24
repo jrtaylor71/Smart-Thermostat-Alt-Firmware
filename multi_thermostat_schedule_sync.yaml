@@ -1,0 +1,105 @@
+# Multi-thermostat schedule sync automation
+# Place this file in /homeassistant/packages/ or directly in configuration.yaml
+# Add all your thermostat hostnames to the host list below
+
+automation:
+  - id: sync_all_thermostats_schedule_from_mqtt
+    alias: "Schedule - Sync All Thermostats from MQTT"
+    mode: queued
+    trigger:
+      platform: mqtt
+      topic: "+/schedule/+"
+    variables:
+      host_raw: "{{ trigger.topic.split('/')[0] }}"
+      host_key: "{{ trigger.topic.split('/')[0] | lower | replace('-', '_') }}"
+      day_slug: "{{ trigger.topic.split('/')[2] }}"
+      payload: "{{ trigger.payload_json }}"
+    condition:
+      - condition: template
+        value_template: >-
+          {% set _host = (trigger.topic.split('/') | first) | lower | replace('-', '_') %}
+          {% set _day = trigger.topic.split('/')[2] %}
+          {{ _day in ['monday','tuesday','wednesday','thursday','friday','saturday','sunday']
+             and _host in ['shop_thermostat', 'studio_thermostat']
+             and trigger.payload_json is defined
+             and trigger.payload_json.day_period is defined
+             and trigger.payload_json.night_period is defined }}
+    action:
+      # Day time
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: "input_datetime.{{ host_key }}_{{ day_slug }}_day_time"
+        data:
+          time: "{{ '%02d:%02d:00' | format(payload.day_period.time.split(':')[0] | int, payload.day_period.time.split(':')[1] | int) }}"
+      # Night time
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: "input_datetime.{{ host_key }}_{{ day_slug }}_night_time"
+        data:
+          time: "{{ '%02d:%02d:00' | format(payload.night_period.time.split(':')[0] | int, payload.night_period.time.split(':')[1] | int) }}"
+      # Day heat
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_day_heat"
+        data:
+          value: "{{ payload.day_period.heat | float }}"
+      # Day cool
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_day_cool"
+        data:
+          value: "{{ payload.day_period.cool | float }}"
+      # Day auto
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_day_auto"
+        data:
+          value: "{{ payload.day_period.auto | float }}"
+      # Day active
+      - if: "{{ payload.day_period.active }}"
+        then:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_day_active"
+        else:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_day_active"
+      # Night heat
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_night_heat"
+        data:
+          value: "{{ payload.night_period.heat | float }}"
+      # Night cool
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_night_cool"
+        data:
+          value: "{{ payload.night_period.cool | float }}"
+      # Night auto
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host_key }}_{{ day_slug }}_night_auto"
+        data:
+          value: "{{ payload.night_period.auto | float }}"
+      # Night active
+      - if: "{{ payload.night_period.active }}"
+        then:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_night_active"
+        else:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_night_active"
+      # Day enabled
+      - if: "{{ payload.day_enabled }}"
+        then:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_enabled"
+        else:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "input_boolean.{{ host_key }}_{{ day_slug }}_enabled"

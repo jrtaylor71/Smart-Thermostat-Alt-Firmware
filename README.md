@@ -15,6 +15,7 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 
 - **📱 Local Touch Control**: ILI9341 TFT LCD with intuitive touch interface
 - **🏠 Smart Home Ready**: Full MQTT integration with Home Assistant auto-discovery
+- **🔄 Bidirectional Schedule Sync (v1.4.001)**: 7-day schedules stay in sync between thermostat and Home Assistant (device ↔ HA) with day/night periods and editable Heat/Cool/Auto temperatures
 - **📅 7-Day Scheduling**: Comprehensive inline scheduling with day/night periods and editable Heat/Cool/Auto temperatures
 - **🌡️ Dual Sensors**: AHT20 for ambient conditions + DS18B20 for hydronic systems
 - **⚡ Multi-Stage HVAC**: Support for 2-stage heating and cooling systems
@@ -90,9 +91,10 @@ Automatic discovery and integration with Home Assistant:
 
 1. Enable MQTT in thermostat settings
 2. Configure MQTT broker details
-3. Thermostat appears automatically in Home Assistant
-4. Full control via Home Assistant interface
-5. Supports climate entity with heating/cooling modes
+ 3. Thermostat appears automatically in Home Assistant
+ 4. Full control via Home Assistant interface (climate entity, helpers, and switches)
+ 5. Bidirectional schedule sync: HA helpers (77 per thermostat) mirror the device schedule; edits on either side stay in sync
+ 6. Supports climate entity with heating/cooling modes
 
 ## 🛠️ Advanced Features
 
@@ -155,14 +157,16 @@ Contributions welcome! Please:
 
 ## ⭐ Version
 
-**Current Version**: 1.3.8 (December 2025)
-### Release Notes: 1.3.8
-- Centralized all hardware pin definitions in `include/HardwarePins.h`
-- Removed scattered/duplicate pin constants from `src/Main-Thermostat.cpp`
-- Verified successful compilation and upload (ESP32-S3 WROOM 16MB)
-- Minor cleanup in Weather/Web modules and `platformio.ini`
+**Current Version**: 1.4.001 (January 2026)
+### Release Notes: 1.4.001
+- Bidirectional MQTT schedule synchronization (thermostat ↔ Home Assistant)
+- Fixed day index off-by-one bug (MQTT Monday=0, firmware Sunday=0)
+- Multi-thermostat support with centralized inbound automation and 77 outbound automations per device
+- 77 Home Assistant helpers per thermostat (14 times, 42 temps, 21 booleans)
+- Added automation generator and schedule templates for HA
+- Updated documentation and quick-start guidance for schedule sync
 
-### Previous Highlights
+### Previous Highlights (1.3.8)
 - Weather Integration: Dual-source weather support (OpenWeatherMap and Home Assistant)
 - Weather Display: Color-coded standard OWM icons with temperature, conditions, and high/low display
 - Weather Web Interface: Dedicated weather tab with AJAX form submission

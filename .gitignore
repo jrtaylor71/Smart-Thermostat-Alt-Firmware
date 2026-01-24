@@ -23,3 +23,6 @@ default_*.csv
 !default_16mb.csv
 *-original.*
 smart-thermostat-pcb/case_from_other/
+
+HA Configs/
+

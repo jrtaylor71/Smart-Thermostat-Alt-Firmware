@@ -23,7 +23,7 @@
 // ============================================================================
 // TEMPERATURE SENSORS
 // ============================================================================
-#define ONE_WIRE_BUS 34    // 1-Wire bus for DS18B20 hydronic temperature sensor
+#define ONE_WIRE_BUS 41    // 1-Wire bus for DS18B20 hydronic temperature sensor
 
 // ============================================================================
 // DISPLAY (TFT_eSPI)

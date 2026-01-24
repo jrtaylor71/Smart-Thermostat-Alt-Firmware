@@ -1,0 +1,70 @@
+automation:
+  - alias: sync_all_thermostats_schedule_helpers
+    mode: queued
+    trigger:
+      - platform: mqtt
+        topic: "+/schedule/+"
+    variables:
+      host: "{{ trigger.topic.split('/')[0] }}"
+      day_slug: "{{ trigger.topic.split('/')[2] }}"           # monday..sunday
+      day_index: "{{ ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].index(day_slug) }}"
+      is_known_day: "{{ day_slug in ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'] }}"
+      payload: "{{ trigger.payload_json }}"
+      day_hour: "{{ payload.day_period.hour | int }}"
+      day_min: "{{ payload.day_period.minute | int }}"
+      night_hour: "{{ payload.night_period.hour | int }}"
+      night_min: "{{ payload.night_period.minute | int }}"
+    condition:
+      - "{{ is_known_day }}"
+      # limit to your thermostat prefixes; add more as needed
+      - "{{ host in ['shop_thermostat', 'studio_thermostat'] }}"
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: "input_datetime.{{ host }}_{{ day_slug }}_day_time"
+        data:
+          time: "{{ '%02d:%02d:00' | format(day_hour, day_min) }}"
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: "input_datetime.{{ host }}_{{ day_slug }}_night_time"
+        data:
+          time: "{{ '%02d:%02d:00' | format(night_hour, night_min) }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_day_heat"
+        data:
+          value: "{{ payload.day_period.heat | float }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_day_cool"
+        data:
+          value: "{{ payload.day_period.cool | float }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_day_auto"
+        data:
+          value: "{{ payload.day_period.auto | float }}"
+      - service: input_boolean.turn_{{ 'on' if payload.day_period.active else 'off' }}
+        target:
+          entity_id: "input_boolean.{{ host }}_{{ day_slug }}_day_active"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_night_heat"
+        data:
+          value: "{{ payload.night_period.heat | float }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_night_cool"
+        data:
+          value: "{{ payload.night_period.cool | float }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "input_number.{{ host }}_{{ day_slug }}_night_auto"
+        data:
+          value: "{{ payload.night_period.auto | float }}"
+      - service: input_boolean.turn_{{ 'on' if payload.night_period.active else 'off' }}
+        target:
+          entity_id: "input_boolean.{{ host }}_{{ day_slug }}_night_active"
+      - service: input_boolean.turn_{{ 'on' if payload.day_enabled else 'off' }}
+        target:
+          entity_id: "input_boolean.{{ host }}_{{ day_slug }}_enabled"
