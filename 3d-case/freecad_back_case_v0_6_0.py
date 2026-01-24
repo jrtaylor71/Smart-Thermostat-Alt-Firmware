@@ -67,6 +67,7 @@ vent_corner_margin = 15.0
 wall_mount_hole_dia = 4.0
 wall_mount_spacing_x = 83.0
 wall_mount_spacing_y = 60.0
+wall_mount_spacing_y_center = 80.16  # Standard US electrical box spacing (3.156 inches) for center 2 holes
 
 # Rounded corners
 corner_r = 4.0
@@ -137,7 +138,7 @@ for x_offset in [-wall_mount_spacing_x / 2.0, wall_mount_spacing_x / 2.0]:
 App.Console.PrintMessage("Cut 4 wall mounting holes\n")
 
 # 2 additional mounting holes between corner holes, towards center
-for y_offset in [-wall_mount_spacing_y / 2.0, wall_mount_spacing_y / 2.0]:
+for y_offset in [-wall_mount_spacing_y_center / 2.0, wall_mount_spacing_y_center / 2.0]:
     mount_hole = Part.makeCylinder(wall_mount_hole_dia / 2.0, bottom_thickness + 1.0,
                                     App.Vector(case_length / 2.0,
                                               case_width / 2.0 + y_offset,
