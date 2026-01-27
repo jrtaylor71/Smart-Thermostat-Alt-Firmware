@@ -46,8 +46,9 @@ We use Stefan's hardware design and provide an enhanced firmware implementation 
 3. Open project in PlatformIO
 4. Configuration optimized for ESP32-S3-WROOM-1-N16 (16MB flash)
 5. Memory usage: RAM 15.2% (49728/327680 bytes); Flash 18.5% (1209901/6553600 bytes, default_16mb.csv partition)
-6. Build and upload to ESP32-S3
-7. Use touch interface to configure WiFi and settings
+6. Erase flash if you are using firmware from Stefan Meisner (original firmware).
+7. Build and upload to ESP32-S3
+8. Use touch interface to configure WiFi and settings
 
 ## 💻 Web Interface
 
@@ -91,10 +92,10 @@ Automatic discovery and integration with Home Assistant:
 
 1. Enable MQTT in thermostat settings
 2. Configure MQTT broker details
- 3. Thermostat appears automatically in Home Assistant
- 4. Full control via Home Assistant interface (climate entity, helpers, and switches)
- 5. Bidirectional schedule sync: HA helpers (77 per thermostat) mirror the device schedule; edits on either side stay in sync
- 6. Supports climate entity with heating/cooling modes
+3. Thermostat appears automatically in Home Assistant
+4. Full control via Home Assistant interface (climate entity, helpers, and switches)
+5. Bidirectional schedule sync: HA helpers (77 per thermostat) mirror the device schedule; edits on either side stay in sync
+6. Supports climate entity with heating/cooling modes
 
 ## 🛠️ Advanced Features
 
