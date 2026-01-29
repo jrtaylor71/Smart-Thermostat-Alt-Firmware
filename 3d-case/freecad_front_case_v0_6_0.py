@@ -220,15 +220,24 @@ sensor_box_inner.translate(App.Vector(-(sensor_box_width - 2*sensor_box_wall)/2,
 
 sensor_box = sensor_box_outer.cut(sensor_box_inner)
 
-# Vent holes removed to avoid geometry issues and prevent inward-facing vents
-# After 90° rotation:
-# - Right wall vents (before rotation) → face upward (top)
-# - Bottom wall vents (before rotation) → face right
-# Removed all vents to simplify geometry and fix Cura errors
-
 # Match SCAD: already centered at origin from construction, rotate then translate
 sensor_box = sensor_box.rotate(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 90)
 sensor_box.translate(App.Vector(sensor_x, sensor_y, 0))
+
+# Add 2mm notch to sensor box BEFORE fusing to shell
+# Based on position that was working: back of box at (sensor_y - sensor_box_width/2)
+# Just make a small notch instead of cutting the whole wall
+notch = Part.makeBox(2.2, 2.5, 3.8)
+notch.translate(App.Vector(sensor_x + 3.8, sensor_y - sensor_box_width/2 - 0.1, case_height - face_thickness - 4.3))
+sensor_box = sensor_box.cut(notch)
+App.Console.PrintMessage("Added notch at sensor box back rim\n")
+
+# Add same notch to the other wall (front side)
+# Wall is 22.2mm from the outside wall on X-axis (left side) - testing with 4x4x4 solid block
+notch2 = Part.makeBox(2.2, 2.5, 3.8)
+notch2.translate(App.Vector(case_length - 22.5, sensor_y - sensor_box_width/2 - 0.1 + 14.5, case_height - face_thickness - 4.3))
+sensor_box = sensor_box.cut(notch2)
+App.Console.PrintMessage("Added notch at sensor box front rim\n")
 
 # Add sensor box to shell
 try:
