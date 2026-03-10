@@ -48,11 +48,17 @@
 #include <Update.h> // For OTA firmware update
 #include "esp_heap_caps.h" // Heap diagnostics
 #include "Weather.h" // Weather integration module
+#include "driver/gpio.h" // GPIO driver for pin control
+#include "driver/usb_serial_jtag.h" // USB Serial JTAG driver for proper disable
+#include "hal/usb_serial_jtag_ll.h" // USB Serial JTAG low-level
+#include "soc/rtc_cntl_reg.h" // RTC control registers
+#include "soc/io_mux_reg.h" // IO MUX registers for pin function override
+#include "esp_rom_gpio.h" // ROM GPIO functions
 #include "HardwarePins.h" // Hardware pin definitions
 #include "SettingsUI.h"
 
 // Version control information
-const String sw_version = "1.4.009"; // Software version
+const String sw_version = "1.4.014"; // Software version - Display cleanup + lockout/fan stability fixes
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
@@ -91,8 +97,16 @@ unsigned long bootButtonPressStart = 0; // When the boot button was pressed
 bool bootButtonPressed = false; // Track if boot button is being pressed
 
 // DS18B20 sensor setup (pin defined in HardwarePins.h as ONEWIRE_PIN)
-OneWire oneWire(ONEWIRE_PIN);
-DallasTemperature ds18b20(&oneWire);
+// NOTE: Create as pointers and initialize AFTER GPIO41 USB JTAG disable in setup()
+OneWire* oneWire = nullptr;
+DallasTemperature* ds18b20 = nullptr;
+
+// Store DS18B20 ROM addresses
+uint8_t ds18b20Address1[8] = {0};
+uint8_t ds18b20Address2[8] = {0};
+bool ds18b20Address1Valid = false;
+bool ds18b20Address2Valid = false;
+
 float hydronicTemp = 0.0;
 float hydronicReturnTemp = 0.0;
 bool hydronicHeatingEnabled = false;
@@ -501,10 +515,11 @@ void sensorTaskFunction(void *parameter) {
         
         // Read DS18B20 hydronic temperature sensors if present
         if (ds18b20SensorPresent || ds18b20ReturnSensorPresent) {
-            ds18b20.requestTemperatures();
+            ds18b20->requestTemperatures();
+            delay(750);  // Wait for temperature conversion (750ms for 12-bit resolution)
 
             if (ds18b20SensorPresent) {
-                float hydTempC = ds18b20.getTempCByIndex(0);
+                float hydTempC = ds18b20->getTempCByIndex(0);
                 if (hydTempC != DEVICE_DISCONNECTED_C && hydTempC != -127.0 && !isnan(hydTempC)) {
                     // Valid reading - convert to Fahrenheit if needed
                     hydronicTemp = useFahrenheit ? (hydTempC * 9.0 / 5.0 + 32.0) : hydTempC;
@@ -515,7 +530,7 @@ void sensorTaskFunction(void *parameter) {
             }
 
             if (ds18b20ReturnSensorPresent) {
-                float returnTempC = ds18b20.getTempCByIndex(1);
+                float returnTempC = ds18b20->getTempCByIndex(1);
                 if (returnTempC != DEVICE_DISCONNECTED_C && returnTempC != -127.0 && !isnan(returnTempC)) {
                     hydronicReturnTemp = useFahrenheit ? (returnTempC * 9.0 / 5.0 + 32.0) : returnTempC;
                 } else {
@@ -1143,7 +1158,31 @@ void debugLog(const char* format, ...) {
 
 void setup()
 {
+    // CRITICAL: GPIO41 is USB Serial JTAG D+ pin - must completely disable USB peripheral
+    // Disable USB PHY entirely at hardware level (most aggressive method)
+    REG_WRITE(RTC_CNTL_USB_CONF_REG, 0);  // Clear all USB config bits
+    
+    // Wait for USB peripheral to power down
+    delay(100);
+    
+    // Force GPIO41 to GPIO function with strong configuration
+    esp_rom_gpio_pad_select_gpio(41);
+    PIN_FUNC_SELECT(GPIO_PIN_MUX_REG[41], PIN_FUNC_GPIO);
+    
+    // Configure pin: reset, then set as open-drain with pullup
+    gpio_reset_pin((gpio_num_t)41);
+    gpio_set_direction((gpio_num_t)41, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_pull_mode((gpio_num_t)41, GPIO_PULLUP_ONLY);
+    gpio_pullup_en((gpio_num_t)41);
+    gpio_pulldown_dis((gpio_num_t)41);
+    
+    // Explicitly drive pin high
+    gpio_set_level((gpio_num_t)41, 1);
+    
+    delay(100);  // Allow pin to stabilize after all configuration;
+    
     Serial.begin(115200);
+    delay(100);  // Allow serial and GPIO41 to stabilize after USB JTAG disable
     
     // Initialize debug buffer with zeros and mutex
     memset(debugBuffer, 0, DEBUG_BUFFER_SIZE);
@@ -1440,14 +1479,117 @@ void setup()
     // Initialize display sleep timing
     lastInteractionTime = millis();
 
-    // Initialize the DS18B20 sensor
-    ds18b20.begin();
+    // Initialize the DS18B20 sensor (GPIO41 USB JTAG already disabled at start of setup)
+    debugLog("Initializing DS18B20 sensors on GPIO%d...\n", ONEWIRE_PIN);
+    
+    // Verify GPIO41 is now high after USB JTAG disable
+    int pinStateAfterConfig = gpio_get_level((gpio_num_t)ONEWIRE_PIN);
+    debugLog("GPIO%d level after USB JTAG disable: %d (should be 1 with pullup)\n", ONEWIRE_PIN, pinStateAfterConfig);
+    
+    if (pinStateAfterConfig == 0) {
+        debugLog("ERROR: GPIO%d still LOW after USB JTAG disable!\n", ONEWIRE_PIN);
+        debugLog("Hardware issue or USB peripheral still active.\n");
+    }
+    
+    // Test OneWire bus by doing a manual reset pulse
+    gpio_set_level((gpio_num_t)ONEWIRE_PIN, 0);
+    delayMicroseconds(500);
+    gpio_set_level((gpio_num_t)ONEWIRE_PIN, 1);
+    gpio_set_direction((gpio_num_t)ONEWIRE_PIN, GPIO_MODE_INPUT);  // Release bus for presence pulse
+    delayMicroseconds(70);
+    int presence = gpio_get_level((gpio_num_t)ONEWIRE_PIN);
+    debugLog("OneWire bus reset test: presence = %d (0=device present, 1=no device)\n", presence);
+    gpio_set_direction((gpio_num_t)ONEWIRE_PIN, GPIO_MODE_INPUT_OUTPUT_OD);  // Restore open-drain mode
+    delay(50);
+    
+    // NOW create OneWire and DallasTemperature objects AFTER GPIO configuration
+    // This is critical - creating them before GPIO41 reconfiguration corrupts their state
+    debugLog("Creating OneWire objects AFTER GPIO41 configuration...\n");
+    
+    oneWire = new OneWire(ONEWIRE_PIN);
+    
+    // CRITICAL: OneWire's begin() method calls pinMode() which may re-enable USB JTAG!
+    // Force GPIO41 back to open-drain mode AFTER OneWire initialization
+    debugLog("Re-forcing GPIO41 configuration after OneWire::begin()...\n");
+    esp_rom_gpio_pad_select_gpio(ONEWIRE_PIN);
+    PIN_FUNC_SELECT(GPIO_PIN_MUX_REG[ONEWIRE_PIN], PIN_FUNC_GPIO);
+    gpio_set_direction((gpio_num_t)ONEWIRE_PIN, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_pull_mode((gpio_num_t)ONEWIRE_PIN, GPIO_PULLUP_ONLY);
+    gpio_pullup_en((gpio_num_t)ONEWIRE_PIN);
+    gpio_set_level((gpio_num_t)ONEWIRE_PIN, 1);
+    delay(50);
+    
+    // Verify GPIO41 is STILL high after OneWire initialization
+    int pinStateAfterOneWire = gpio_get_level((gpio_num_t)ONEWIRE_PIN);
+    debugLog("GPIO41 level after OneWire init: %d (should be 1)\n", pinStateAfterOneWire);
+    
+    delay(100);
+    
+    // Try manual OneWire device search
+    debugLog("Performing manual OneWire device search...\n");
+    uint8_t addr[8];
+    int manualDeviceCount = 0;
+    oneWire->reset_search();
+    delay(50);
+    
+    // Try multiple search attempts
+    for (int attempt = 0; attempt < 5; attempt++) {
+        debugLog("  Search attempt %d...\n", attempt + 1);
+        
+        // Test reset before each search
+        uint8_t resetResult = oneWire->reset();
+        debugLog("    Reset result: %d (should be 1 for device present)\n", resetResult);
+        if (resetResult == 0) {
+            debugLog("    No devices detected on bus (reset failed)\n");
+            delay(100);
+            continue;
+        }
+        
+        if (oneWire->search(addr)) {
+            manualDeviceCount++;
+            debugLog("  Device %d ROM: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     manualDeviceCount, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7]);
+            
+            // Verify CRC
+            if (OneWire::crc8(addr, 7) != addr[7]) {
+                debugLog("    WARNING: CRC invalid!\n");
+            } else {
+                debugLog("    CRC valid\n");
+                
+                // Check device family (0x28 = DS18B20)
+                if (addr[0] == 0x28) {
+                    debugLog("    Device is DS18B20\n");
+                    if (manualDeviceCount == 1 && !ds18b20Address1Valid) {
+                        memcpy(ds18b20Address1, addr, 8);
+                        ds18b20Address1Valid = true;
+                    } else if (manualDeviceCount == 2 && !ds18b20Address2Valid) {
+                        memcpy(ds18b20Address2, addr, 8);
+                        ds18b20Address2Valid = true;
+                    }
+                } else {
+                    debugLog("    Device family code: 0x%02X (not DS18B20)\n", addr[0]);
+                }
+            }
+            delay(10);  // Delay between device discoveries
+        } else {
+            break;  // No more devices
+        }
+    }
+    debugLog("Manual search found %d device(s)\n", manualDeviceCount);
+    
+    // Now initialize DallasTemperature library
+    ds18b20 = new DallasTemperature(oneWire);
+    ds18b20->begin();
+    delay(200);  // Wait for DS18B20 sensors to initialize
     
     // Check if DS18B20 sensors are present
-    ds18b20.requestTemperatures();
-    int ds18b20Count = ds18b20.getDeviceCount();
-    float tempC = ds18b20.getTempCByIndex(0);
-    float returnTempC = ds18b20.getTempCByIndex(1);
+    ds18b20->requestTemperatures();
+    delay(750);  // Wait for temperature conversion (750ms for 12-bit resolution)
+    int ds18b20Count = ds18b20->getDeviceCount();
+    debugLog("DS18B20 device count: %d\n", ds18b20Count);
+    float tempC = ds18b20->getTempCByIndex(0);
+    float returnTempC = ds18b20->getTempCByIndex(1);
+    debugLog("DS18B20 readings: Supply=%.1f°C, Return=%.1f°C\n", tempC, returnTempC);
     ds18b20SensorPresent = (ds18b20Count >= 1) && (tempC != DEVICE_DISCONNECTED_C && tempC != -127.0);
     ds18b20ReturnSensorPresent = (ds18b20Count >= 2) && (returnTempC != DEVICE_DISCONNECTED_C && returnTempC != -127.0);
     
@@ -1460,6 +1602,13 @@ void setup()
         debugLog("DS18B20 return sensor detected\n");
     } else {
         debugLog("DS18B20 return sensor NOT detected\n");
+    }
+    
+    // Republish MQTT discovery after DS18B20 initialization
+    // (initial discovery happened before sensors were initialized)
+    if (mqttEnabled && mqttClient.connected()) {
+        debugLog("Republishing Home Assistant discovery with DS18B20 sensors...\n");
+        publishHomeAssistantDiscovery();
     }
     
     // Create sensor task on core 1
@@ -2589,6 +2738,72 @@ void publishHomeAssistantDiscovery()
             debugLog("Published BME280 pressure sensor discovery to Home Assistant\n");
         }
         
+        // Publish DS18B20 supply temperature sensor discovery if present
+        debugLog("DS18B20 Supply Sensor Present: %s\n", ds18b20SensorPresent ? "YES" : "NO");
+        if (ds18b20SensorPresent) {
+            StaticJsonDocument<512> ds18b20SupplyDoc;
+            String supplyConfigTopic = "homeassistant/sensor/" + hostname + "_ds18b20_supply/config";
+            
+            ds18b20SupplyDoc["name"] = "Hydronic Supply Temperature";
+            ds18b20SupplyDoc["device_class"] = "temperature";
+            ds18b20SupplyDoc["state_topic"] = hostname + "/ds18b20_supply_temperature";
+            ds18b20SupplyDoc["unit_of_measurement"] = "°F";
+            ds18b20SupplyDoc["unique_id"] = hostname + "_ds18b20_supply";
+            ds18b20SupplyDoc["state_class"] = "measurement";
+            ds18b20SupplyDoc["icon"] = "mdi:thermometer";
+            
+            // Link to same device as main thermostat
+            JsonObject device = ds18b20SupplyDoc.createNestedObject("device");
+            device["identifiers"][0] = hostname;
+            device["name"] = hostname;
+            device["model"] = PROJECT_NAME_SHORT;
+            device["manufacturer"] = "TDC";
+            device["sw_version"] = sw_version;
+            
+            char supplyBuffer[512];
+            serializeJson(ds18b20SupplyDoc, supplyBuffer);
+            mqttClient.publish(supplyConfigTopic.c_str(), supplyBuffer, true);
+            
+            debugLog("Published DS18B20 supply sensor discovery to Home Assistant\n");
+        } else {
+            // Remove sensor if not present
+            String supplyConfigTopic = "homeassistant/sensor/" + hostname + "_ds18b20_supply/config";
+            mqttClient.publish(supplyConfigTopic.c_str(), "", true);
+        }
+        
+        // Publish DS18B20 return temperature sensor discovery if present
+        debugLog("DS18B20 Return Sensor Present: %s\n", ds18b20ReturnSensorPresent ? "YES" : "NO");
+        if (ds18b20ReturnSensorPresent) {
+            StaticJsonDocument<512> ds18b20ReturnDoc;
+            String returnConfigTopic = "homeassistant/sensor/" + hostname + "_ds18b20_return/config";
+            
+            ds18b20ReturnDoc["name"] = "Hydronic Return Temperature";
+            ds18b20ReturnDoc["device_class"] = "temperature";
+            ds18b20ReturnDoc["state_topic"] = hostname + "/ds18b20_return_temperature";
+            ds18b20ReturnDoc["unit_of_measurement"] = "°F";
+            ds18b20ReturnDoc["unique_id"] = hostname + "_ds18b20_return";
+            ds18b20ReturnDoc["state_class"] = "measurement";
+            ds18b20ReturnDoc["icon"] = "mdi:thermometer";
+            
+            // Link to same device as main thermostat
+            JsonObject device = ds18b20ReturnDoc.createNestedObject("device");
+            device["identifiers"][0] = hostname;
+            device["name"] = hostname;
+            device["model"] = PROJECT_NAME_SHORT;
+            device["manufacturer"] = "TDC";
+            device["sw_version"] = sw_version;
+            
+            char returnBuffer[512];
+            serializeJson(ds18b20ReturnDoc, returnBuffer);
+            mqttClient.publish(returnConfigTopic.c_str(), returnBuffer, true);
+            
+            debugLog("Published DS18B20 return sensor discovery to Home Assistant\n");
+        } else {
+            // Remove sensor if not present
+            String returnConfigTopic = "homeassistant/sensor/" + hostname + "_ds18b20_return/config";
+            mqttClient.publish(returnConfigTopic.c_str(), "", true);
+        }
+        
         // Publish shower mode switch discovery if feature is enabled
         if (showerModeEnabled) {
             StaticJsonDocument<512> showerDoc;
@@ -3231,6 +3446,40 @@ void sendMQTTData()
             String hydronicTempTopic = hostname + "/hydronic_temperature";
             mqttClient.publish(hydronicTempTopic.c_str(), String(hydronicTemp, 1).c_str(), true);
         }
+        
+        // Publish DS18B20 supply temperature if sensor is present
+        if (ds18b20SensorPresent && ds18b20 != nullptr)
+        {
+            static float lastDs18b20SupplyTemp = -999.0;
+            float supplyTempC = ds18b20->getTempCByIndex(0);
+            if (supplyTempC != DEVICE_DISCONNECTED_C && supplyTempC != -127.0)
+            {
+                float supplyTempF = supplyTempC * 9.0 / 5.0 + 32.0;
+                if (abs(supplyTempF - lastDs18b20SupplyTemp) > 0.1)
+                {
+                    String supplyTempTopic = hostname + "/ds18b20_supply_temperature";
+                    mqttClient.publish(supplyTempTopic.c_str(), String(supplyTempF, 1).c_str(), true);
+                    lastDs18b20SupplyTemp = supplyTempF;
+                }
+            }
+        }
+        
+        // Publish DS18B20 return temperature if sensor is present
+        if (ds18b20ReturnSensorPresent && ds18b20 != nullptr)
+        {
+            static float lastDs18b20ReturnTemp = -999.0;
+            float returnTempC = ds18b20->getTempCByIndex(1);
+            if (returnTempC != DEVICE_DISCONNECTED_C && returnTempC != -127.0)
+            {
+                float returnTempF = returnTempC * 9.0 / 5.0 + 32.0;
+                if (abs(returnTempF - lastDs18b20ReturnTemp) > 0.1)
+                {
+                    String returnTempTopic = hostname + "/ds18b20_return_temperature";
+                    mqttClient.publish(returnTempTopic.c_str(), String(returnTempF, 1).c_str(), true);
+                    lastDs18b20ReturnTemp = returnTempF;
+                }
+            }
+        }
 
         // Monitor hydronic boiler water temperature and send alerts
         debugLog("[DEBUG] Hydronic Alert Check: enabled=%s, temp=%.1f, tempValid=%s\n",
@@ -3425,6 +3674,10 @@ void controlRelays(float currentTemp)
         return;
     }
     
+    // Fan safety interlock: block fan when hydronic lockout conditions are active
+    bool fanBlockedByHydronicSafety = hydronicHeatingEnabled &&
+        (!ds18b20SensorPresent || isnan(hydronicTemp) || hydronicTemp < hydronicTempLow || hydronicLockout);
+
     // Store current states before any changes
     bool currentHeatingOn = heatingOn;
     bool currentCoolingOn = coolingOn;
@@ -3445,7 +3698,7 @@ void controlRelays(float currentTemp)
         stage2Active = false;
         
         // Handle fan separately based on fanMode
-        if (fanMode == "on") {
+        if (fanMode == "on" && !fanBlockedByHydronicSafety) {
             if (!fanOn) {
                 digitalWrite(FAN_RELAY_PIN, HIGH);
                 fanOn = true;
@@ -3636,6 +3889,9 @@ void controlRelays(float currentTemp)
 void turnOffAllRelays()
 {
     debugLog("[DEBUG] turnOffAllRelays() - Turning off heating/cooling relays\n");
+    bool fanBlockedByHydronicSafety = hydronicHeatingEnabled &&
+        (!ds18b20SensorPresent || isnan(hydronicTemp) || hydronicTemp < hydronicTempLow || hydronicLockout);
+
     digitalWrite(HEAT_RELAY_1_PIN, LOW);
     digitalWrite(HEAT_RELAY_2_PIN, LOW);
     digitalWrite(COOL_RELAY_1_PIN, LOW);
@@ -3646,7 +3902,7 @@ void turnOffAllRelays()
     stage2Active = false; // Reset stage 2 active flag
     
     // Handle fan based on fanMode setting
-    if (fanMode == "on") {
+    if (fanMode == "on" && !fanBlockedByHydronicSafety) {
         // Keep fan running in "on" mode
         if (!fanOn) {
             digitalWrite(FAN_RELAY_PIN, HIGH);
@@ -3772,7 +4028,8 @@ void activateHeating() {
     
     // Control fan based on fanRelayNeeded setting
     // BUT: Never override manual "on" mode - user takes priority
-    if (fanMode == "on") {
+    if (fanMode == "on" && !(hydronicHeatingEnabled &&
+        (!ds18b20SensorPresent || isnan(hydronicTemp) || hydronicTemp < hydronicTempLow || hydronicLockout))) {
         // User has manually set fan to always on - respect that
         if (!fanOn) {
             debugLog("[HVAC] FAN turned ON (manual mode)\n");
@@ -3859,7 +4116,8 @@ void activateCooling()
     
     // Control fan based on fanRelayNeeded setting
     // BUT: Never override manual "on" mode - user takes priority
-    if (fanMode == "on") {
+    if (fanMode == "on" && !(hydronicHeatingEnabled &&
+        (!ds18b20SensorPresent || isnan(hydronicTemp) || hydronicTemp < hydronicTempLow || hydronicLockout))) {
         // User has manually set fan to always on - respect that
         if (!fanOn) {
             digitalWrite(FAN_RELAY_PIN, HIGH);
@@ -4911,15 +5169,15 @@ void updateDisplay(float currentTemp, float currentHumidity)
         tft.setTextSize(2); // Adjust text size to fit the display
         tft.setRotation(1); // Set rotation for vertical display
         
-        // Temperature at y=30 (moved to x=230 to prevent overlap with set temp)
-        tft.setCursor(230, 30);
+        // Temperature at y=30 (shifted left to prevent right-edge wrapping)
+        tft.setCursor(220, 30);
         char tempStr[6];
         dtostrf(currentTemp, 4, 1, tempStr); // Convert temperature to string with 1 decimal place
         tft.print(tempStr);
         tft.print(useFahrenheit ? "F" : "C");
 
-        // Humidity at y=55 (tighter spacing)
-        tft.setCursor(230, 55);
+        // Humidity (even spacing from top temperature row)
+        tft.setCursor(220, 50);
         char humidityStr[6];
         dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
         tft.print(humidityStr);
@@ -4927,26 +5185,26 @@ void updateDisplay(float currentTemp, float currentHumidity)
         
         // Display pressure if BME280/BME680 sensor is active (convert hPa to inHg: divide by 33.8639)
         if ((activeSensor == SENSOR_BME280 || activeSensor == SENSOR_BME680) && !isnan(currentPressure)) {
-            tft.setCursor(230, 75); // Pressure at y=75, tighter spacing
+            tft.setCursor(220, 70); // Pressure (even spacing)
             float pressureInHg = currentPressure / 33.8639; // Convert hPa to inHg
             char pressureStr[7];
             dtostrf(pressureInHg, 4, 2, pressureStr); // Format as "XX.XX"
             tft.print(pressureStr);
             tft.print("in");
         } else {
-            // Clear pressure area if not BME280/BME680 or invalid
-            tft.fillRect(230, 75, 80, 16, COLOR_BACKGROUND);
+            // Clear pressure area if not BME280/BME680 or invalid (use 100px to ensure full clear)
+            tft.fillRect(220, 70, 100, 16, COLOR_BACKGROUND);
         }
         
         // Display air quality if BME680 sensor is active
         if (activeSensor == SENSOR_BME680) {
-            tft.setCursor(230, 95); // Air quality at y=95, tighter spacing
+            tft.setCursor(220, 90); // Air quality (even spacing)
             int aqScore = (int)currentAirQuality;
             tft.print("AQ:");
             tft.print(aqScore);
         } else {
-            // Clear air quality area if not BME680
-            tft.fillRect(230, 95, 80, 16, COLOR_BACKGROUND);
+            // Clear air quality area if not BME680 (use 100px to ensure full clear)
+            tft.fillRect(220, 90, 100, 16, COLOR_BACKGROUND);
         }
 
         // Update previous values
@@ -4964,13 +5222,13 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // if (hydronicHeatingEnabled && ds18b20SensorPresent) {
         if (hydronicHeatingEnabled) {
             if (hydronicTemp != previousHydronicTemp || hydronicReturnTemp != previousHydronicReturnTemp || !prevHydronicDisplayState) {
-                // Clear hydronic area (two lines)
-                tft.fillRect(230, 110, 90, 32, COLOR_BACKGROUND);
+                // Clear hydronic area (two lines) - use 100px to ensure full clear
+                tft.fillRect(220, 110, 100, 36, COLOR_BACKGROUND);
                 tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
                 tft.setTextSize(2);
 
                 // Always show SUP slot when enabled, even if sensor missing
-                tft.setCursor(230, 110);
+                tft.setCursor(220, 110);
                 if (ds18b20SensorPresent) {
                     char hydronicTempStr[6];
                     dtostrf(hydronicTemp, 4, 1, hydronicTempStr);
@@ -4982,7 +5240,7 @@ void updateDisplay(float currentTemp, float currentHumidity)
                 }
 
                 if (ds18b20ReturnSensorPresent) {
-                    tft.setCursor(230, 126);
+                    tft.setCursor(220, 130);
                     char hydronicReturnStr[6];
                     dtostrf(hydronicReturnTemp, 4, 1, hydronicReturnStr);
                     tft.print("R:");
@@ -4996,27 +5254,28 @@ void updateDisplay(float currentTemp, float currentHumidity)
             }
         } 
         else if (prevHydronicDisplayState) {
-            // If hydronic heating is disabled, clear the DS18B20 display area
-            tft.fillRect(230, 110, 90, 32, COLOR_BACKGROUND);
+            // If hydronic heating is disabled, clear the DS18B20 display area (use 100px to ensure full clear)
+            tft.fillRect(220, 110, 100, 36, COLOR_BACKGROUND);
             prevHydronicDisplayState = false;
         }    // Display hydronic lockout warning if active
     static bool prevHydronicLockoutDisplay = false;
     if (fullRefreshTriggered) { // force refresh on cache reset
         prevHydronicLockoutDisplay = false;
     }
-    if (hydronicHeatingEnabled && hydronicLockout) {
+    bool showHydronicLockoutBanner = hydronicHeatingEnabled && hydronicLockout && (thermostatMode == "heat");
+    if (showHydronicLockoutBanner) {
         if (!prevHydronicLockoutDisplay) {
-            // Show lockout warning
-            tft.fillRect(10, 20, 200, 30, COLOR_WARNING);
+            // Show lockout warning above setpoint area (keeps weather and status indicators unobstructed)
+            tft.fillRect(40, 72, 170, 20, COLOR_WARNING);
             tft.setTextColor(TFT_BLACK, COLOR_WARNING);
-            tft.setTextSize(2);
-            tft.setCursor(15, 30);
+            tft.setTextSize(1);
+            tft.setCursor(66, 78);
             tft.print("BOILER LOCKOUT");
             prevHydronicLockoutDisplay = true;
         }
     } else if (prevHydronicLockoutDisplay) {
         // Clear lockout warning
-        tft.fillRect(10, 20, 200, 30, COLOR_BACKGROUND);
+        tft.fillRect(40, 72, 170, 20, COLOR_BACKGROUND);
         prevHydronicLockoutDisplay = false;
     }
 
@@ -5025,21 +5284,21 @@ void updateDisplay(float currentTemp, float currentHumidity)
     {
         float currentSetTemp = (thermostatMode == "heat") ? setTempHeat : (thermostatMode == "cool") ? setTempCool : setTempAuto;
         
-        // Display set temperature at original location (center-ish)
+        // Display set temperature moved left for better spacing from right-column telemetry
         if (currentSetTemp != previousSetTemp && !showerModeActive) {
-            // Only show setpoint when NOT in shower mode
-            tft.fillRect(60, 95, 150, 50, COLOR_BACKGROUND);
+            // Only show setpoint when NOT in shower mode (limit width to not overlap sensor readings at x=230)
+            tft.fillRect(40, 95, 165, 50, COLOR_BACKGROUND);
             tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
             tft.setTextSize(4);
-            tft.setCursor(60, 100);
+            tft.setCursor(40, 100);
             char tempStr[6];
             dtostrf(currentSetTemp, 4, 1, tempStr);
             tft.print(tempStr);
             tft.println(useFahrenheit ? " F" : " C");
             previousSetTemp = currentSetTemp;
         } else if (showerModeActive && currentSetTemp != previousSetTemp) {
-            // Clear setpoint area when entering shower mode
-            tft.fillRect(60, 95, 150, 50, COLOR_BACKGROUND);
+            // Clear setpoint area when entering shower mode (limit width to not overlap sensor readings at x=230)
+            tft.fillRect(40, 95, 165, 50, COLOR_BACKGROUND);
             previousSetTemp = currentSetTemp;
         }
         
@@ -5084,8 +5343,8 @@ void updateDisplay(float currentTemp, float currentHumidity)
     }
     else
     {
-        // Clear the set temperature area if mode is "off"
-        tft.fillRect(60, 100, 200, 40, COLOR_BACKGROUND);
+        // Clear the set temperature area if mode is "off" (limit width to not overlap sensor readings at x=230)
+        tft.fillRect(40, 100, 165, 40, COLOR_BACKGROUND);
     }
 
     // Add status indicators for heating, cooling, and fan
