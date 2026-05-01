@@ -4,7 +4,7 @@
 
 cd "$(dirname "$0")"
 
-KEEP_COUNT=1
+KEEP_COUNT=3
 DO_CLEAN=0
 
 while [[ $# -gt 0 ]]; do

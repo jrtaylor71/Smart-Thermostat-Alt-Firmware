@@ -1,1 +1,1 @@
-build_20260415-172544/flash.sh
+N16/latest_flash.sh
