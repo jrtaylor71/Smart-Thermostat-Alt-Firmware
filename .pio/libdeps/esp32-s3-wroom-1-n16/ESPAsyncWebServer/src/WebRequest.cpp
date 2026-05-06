@@ -29,11 +29,22 @@ enum {
   PARSE_REQ_FAIL = 4
 };
 
+enum {
+  CHUNK_NONE = 0,   // Body transfer encoding is not chunked
+  CHUNK_LENGTH,     // Getting chunk length - HHHH[;...] CR LF
+  CHUNK_EXTENSION,  // Getting chunk extension - ;... CR LF
+  CHUNK_DATA,       // Handling chunk data
+  CHUNK_ERROR,      // Invalid chunk header
+  CHUNK_END,        // Getting chunk end marker  - CR LF
+};
+
 AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer *s, AsyncClient *c)
-  : _client(c), _server(s), _handler(NULL), _response(NULL), _onDisconnectfn(NULL), _temp(), _parseState(PARSE_REQ_START), _version(0), _method(HTTP_ANY),
-    _url(), _host(), _contentType(), _boundary(), _authorization(), _reqconntype(RCT_HTTP), _authMethod(AsyncAuthType::AUTH_NONE), _isMultipart(false),
-    _isPlainPost(false), _expectingContinue(false), _contentLength(0), _parsedLength(0), _multiParseState(0), _boundaryPosition(0), _itemStartIndex(0),
-    _itemSize(0), _itemName(), _itemFilename(), _itemType(), _itemValue(), _itemBuffer(0), _itemBufferIndex(0), _itemIsFile(false), _tempObject(NULL) {
+  : _client(c), _server(s), _handler(NULL), _response(NULL), _onDisconnectfn(NULL), _temp(), _parseState(PARSE_REQ_START), _version(0),
+    _method(AsyncWebRequestMethod::HTTP_UNKNOWN), _url(), _host(), _contentType(), _boundary(), _authorization(), _reqconntype(RCT_HTTP),
+    _authMethod(AsyncAuthType::AUTH_NONE), _isMultipart(false), _isPlainPost(false), _expectingContinue(false), _contentLength(0), _parsedLength(0),
+    _multiParseState(0), _boundaryPosition(0), _itemStartIndex(0), _itemSize(0), _itemName(), _itemFilename(), _itemType(), _itemValue(), _itemBuffer(0),
+    _itemBufferIndex(0), _itemIsFile(false), _chunkStartIndex(0), _chunkOffset(0), _chunkSize(0), _chunkedParseState(CHUNK_NONE), _chunkedLastChar(0),
+    _tempObject(NULL) {
   c->onError(
     [](void *r, AsyncClient *c, int8_t error) {
       (void)c;
@@ -164,6 +175,14 @@ void AsyncWebServerRequest::_onData(void *buf, size_t len) {
         }
       }
     } else if (_parseState == PARSE_REQ_BODY) {
+      if (_chunkedParseState != CHUNK_NONE) {
+        if (_parseChunkedBytes((uint8_t *)buf, len)) {
+          _parseState = PARSE_REQ_END;
+          _runMiddlewareChain();
+          _send();
+        }
+        break;
+      }
       // A handler should be already attached at this point in _parseLine function.
       // If handler does nothing (_onRequest is NULL), we don't need to really parse the body.
       const bool needParse = _handler && !_handler->isRequestHandlerTrivial();
@@ -279,7 +298,7 @@ void AsyncWebServerRequest::_addGetParams(const String &params) {
       equal = end;
     }
     String name = urlDecode(params.substring(start, equal));
-    String value = urlDecode(equal + 1 < end ? params.substring(equal + 1, end) : emptyString);
+    String value = urlDecode(equal + 1 < end ? params.substring(equal + 1, end) : asyncsrv::emptyString);
     if (name.length()) {
       _params.emplace_back(name, value);
     }
@@ -295,21 +314,8 @@ bool AsyncWebServerRequest::_parseReqHead() {
   String u = _temp.substring(m.length() + 1, index);
   _temp = _temp.substring(index + 1);
 
-  if (m == T_GET) {
-    _method = HTTP_GET;
-  } else if (m == T_POST) {
-    _method = HTTP_POST;
-  } else if (m == T_DELETE) {
-    _method = HTTP_DELETE;
-  } else if (m == T_PUT) {
-    _method = HTTP_PUT;
-  } else if (m == T_PATCH) {
-    _method = HTTP_PATCH;
-  } else if (m == T_HEAD) {
-    _method = HTTP_HEAD;
-  } else if (m == T_OPTIONS) {
-    _method = HTTP_OPTIONS;
-  } else {
+  _method = asyncsrv::stringToMethod(m);
+  if (_method == AsyncWebRequestMethod::HTTP_INVALID) {
     return false;
   }
 
@@ -330,8 +336,132 @@ bool AsyncWebServerRequest::_parseReqHead() {
     _version = 1;
   }
 
-  _temp = emptyString;
+  _temp = asyncsrv::emptyString;
   return true;
+}
+
+// Returns true when done
+bool AsyncWebServerRequest::_parseChunkedBytes(uint8_t *buf, size_t len) {
+  for (size_t i = 0; i < len;) {
+    if (_chunkedParseState == CHUNK_DATA) {
+      // In DATA state, we pass the bytes off to handleBody as a group
+
+      // In order to avoid allocating an extra buffer, the data
+      // blocks that we pass on do not necessarily correspond to
+      // whole chunks.  We just send however much we already have,
+      // anticipating that more will arrive later.  handleBody()
+      // cannot assume that it receives entire chunks at once.
+      // That should not be a problem because we do not attach
+      // any semantic meaning to chunks.  That might change if
+      // we were to support chunk extensions, but that seems
+      // unlikely since RFC9112 suggests that they are only
+      // useful for very specialized purposes.
+      size_t curLen = std::min(_chunkSize - _chunkOffset, len - i);
+
+      // On the final zero-length chunk, _chunkSize - _chunkOffset
+      // will be zero, so we will call handleBody with a zero size,
+      // marking the end of the data stream.
+
+      if (_handler) {
+        _handler->handleBody(this, buf + i, curLen, _chunkStartIndex, _contentLength);
+      }
+      _chunkOffset += curLen;
+      _chunkStartIndex += curLen;
+      i += curLen;
+      if (_chunkOffset == _chunkSize) {
+        _chunkedParseState = CHUNK_END;
+      }
+    } else {
+      // In other states we process the bytes one by one
+      uint8_t data = buf[i++];
+
+      auto last_was_cr = _chunkedLastChar == '\r';
+      _chunkedLastChar = data;
+
+      if (_chunkedParseState == CHUNK_LENGTH) {
+        // Incrementally decode a hex number
+        if (data >= '0' && data <= '9') {
+          if (_chunkSize >= 0x1000000) {
+            _chunkedParseState = CHUNK_ERROR;
+          } else {
+            _chunkSize = (_chunkSize * 16) + (data - '0');
+          }
+        } else if (data >= 'A' && data <= 'F') {
+          if (_chunkSize >= 0x1000000) {
+            _chunkedParseState = CHUNK_ERROR;
+          } else {
+            _chunkSize = (_chunkSize * 16) + (data - 'A' + 10);
+          }
+        } else if (data >= 'a' && data <= 'f') {
+          if (_chunkSize >= 0x1000000) {
+            _chunkedParseState = CHUNK_ERROR;
+          } else {
+            _chunkSize = (_chunkSize * 16) + (data - 'a' + 10);
+          }
+        } else if (data == ';') {
+          _chunkedParseState = CHUNK_EXTENSION;
+        } else if (data == '\r') {
+          // Wait for LF
+        } else if (data == '\n') {
+          if (last_was_cr) {
+            _chunkOffset = 0;
+            _chunkedParseState = CHUNK_DATA;
+
+          } else {
+            _chunkedParseState = CHUNK_ERROR;
+          }
+        } else {
+          // Invalid hex character
+          _chunkedParseState = CHUNK_ERROR;
+        }
+      } else if (_chunkedParseState == CHUNK_EXTENSION) {
+        // Chunk extensions appear after a semicolon.
+        // We ignore them because their use cases are
+        // specialized and obscure.
+        if (data == '\r') {
+          // Wait for LF
+        } else if (data == '\n') {
+          if (last_was_cr) {
+            _chunkOffset = 0;
+            _chunkedParseState = CHUNK_DATA;
+          } else {
+            _chunkedParseState = CHUNK_ERROR;
+          }
+        }
+      } else if (_chunkedParseState == CHUNK_END) {
+        if (data == '\r') {
+          // Wait for LF
+        } else if (data == '\n') {
+          if (last_was_cr) {
+            // A zero length chunk marks the end of the chunk stream
+            if (_chunkSize == 0) {
+              // If we needed to support trailers, we would switch to
+              // TRAILER state, but since we have no use case for them,
+              // we just stop processing the body.
+              return true;
+            }
+            _chunkSize = 0;
+            _chunkedParseState = CHUNK_LENGTH;
+          } else {
+            _chunkedParseState = CHUNK_ERROR;
+          }
+        }
+      }
+
+      if (_chunkedParseState == CHUNK_ERROR) {
+        // If there was an error when parsing the chunk length, the
+        // rest of the data stream is unreliable.  Ideally we should
+        // close the connection, but that risks leaving things dangling
+        // (e.g. an open file), so it is probably best to just ignore
+        // the rest of the data and give handleRequest a chance to
+        // clean up.
+        _chunkSize = 0;
+        abort();
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool AsyncWebServerRequest::_parseReqHeader() {
@@ -348,7 +478,10 @@ bool AsyncWebServerRequest::_parseReqHeader() {
         _boundary.replace(String('"'), String());
         _isMultipart = true;
       }
-    } else if (name.equalsIgnoreCase(T_Content_Length)) {
+    } else if (name.equalsIgnoreCase(T_Content_Length) || name.equalsIgnoreCase(T_X_Expected_Entity_Length)) {
+      // MacOS WebDAVFS uses X-Expected-Entity-Length to indicate the
+      // total length of a chunked request body.  It is useful to
+      // determine if a PUT can possibly fit in the available space.
       _contentLength = atoi(value.c_str());
     } else if (name.equalsIgnoreCase(T_EXPECT) && value.equalsIgnoreCase(T_100_CONTINUE)) {
       _expectingContinue = true;
@@ -385,12 +518,34 @@ bool AsyncWebServerRequest::_parseReqHeader() {
         // WebEvent request can be uniquely identified by header:  [Accept: text/event-stream]
         _reqconntype = RCT_EVENT;
       }
+    } else if (name.equalsIgnoreCase(T_Transfer_Encoding)) {
+      String lowcase(value);
+      lowcase.toLowerCase();
+      String key;
+
+      while (lowcase.length()) {
+        auto pos = lowcase.indexOf(',');
+        if (pos >= 0) {
+          key = lowcase.substring(0, pos);
+          lowcase = lowcase.substring(pos + 1);
+        } else {
+          key = lowcase;
+          lowcase = "";
+        }
+        key.trim();
+        if (key == "chunked") {
+          _chunkSize = 0;
+          _chunkStartIndex = 0;
+          _chunkedParseState = CHUNK_LENGTH;
+          break;
+        }
+      }
     }
     _headers.emplace_back(std::move(header));
   }
-#if defined(TARGET_RP2040) || defined(TARGET_RP2350) || defined(PICO_RP2040) || defined(PICO_RP2350) || defined(LIBRETINY)
-  // Ancient PRI core does not have String::clear() method 8-()
-  _temp = emptyString;
+#if defined(TARGET_RP2040) || defined(TARGET_RP2350) || defined(PICO_RP2040) || defined(PICO_RP2350) || defined(LIBRETINY) || defined(HOST)
+  // ArduinoCore-API does not have String::clear() method 8-()
+  _temp = asyncsrv::emptyString;
 #else
   _temp.clear();
 #endif
@@ -413,9 +568,9 @@ void AsyncWebServerRequest::_parsePlainPostChar(uint8_t data) {
       _params.emplace_back(name, urlDecode(value), true);
     }
 
-#if defined(TARGET_RP2040) || defined(TARGET_RP2350) || defined(PICO_RP2040) || defined(PICO_RP2350) || defined(LIBRETINY)
-    // Ancient PRI core does not have String::clear() method 8-()
-    _temp = emptyString;
+#if defined(TARGET_RP2040) || defined(TARGET_RP2350) || defined(PICO_RP2040) || defined(PICO_RP2350) || defined(LIBRETINY) || defined(HOST)
+    // ArduinoCore-API does not have String::clear() method 8-()
+    _temp = asyncsrv::emptyString;
 #else
     _temp.clear();
 #endif
@@ -460,10 +615,10 @@ void AsyncWebServerRequest::_parseMultipartPostByte(uint8_t data, bool last) {
 
   if (!_parsedLength) {
     _multiParseState = EXPECT_BOUNDARY;
-    _temp = emptyString;
-    _itemName = emptyString;
-    _itemFilename = emptyString;
-    _itemType = emptyString;
+    _temp = asyncsrv::emptyString;
+    _itemName = asyncsrv::emptyString;
+    _itemFilename = asyncsrv::emptyString;
+    _itemType = asyncsrv::emptyString;
   }
 
   if (_multiParseState == WAIT_FOR_RETURN1) {
@@ -531,13 +686,13 @@ void AsyncWebServerRequest::_parseMultipartPostByte(uint8_t data, bool last) {
             _params.emplace_back(T_filename, _itemFilename, true, true);
           }
         }
-        _temp = emptyString;
+        _temp = asyncsrv::emptyString;
       } else {
         _multiParseState = WAIT_FOR_RETURN1;
         // value starts from here
         _itemSize = 0;
         _itemStartIndex = _parsedLength;
-        _itemValue = emptyString;
+        _itemValue = asyncsrv::emptyString;
         if (_itemIsFile) {
           if (_itemBuffer) {
             free(_itemBuffer);
@@ -680,7 +835,7 @@ void AsyncWebServerRequest::_parseLine() {
         String response(T_HTTP_100_CONT);
         _client->write(response.c_str(), response.length());
       }
-      if (_contentLength) {
+      if (_contentLength || _chunkedParseState != CHUNK_NONE) {
         _parseState = PARSE_REQ_BODY;
       } else {
         _parseState = PARSE_REQ_END;
@@ -1064,7 +1219,7 @@ const String &AsyncWebServerRequest::arg(const char *name) const {
       return arg.value();
     }
   }
-  return emptyString;
+  return asyncsrv::emptyString;
 }
 
 #ifdef ESP8266
@@ -1083,7 +1238,7 @@ const String &AsyncWebServerRequest::argName(size_t i) const {
 
 const String &AsyncWebServerRequest::header(const char *name) const {
   const AsyncWebHeader *h = getHeader(name);
-  return h ? h->value() : emptyString;
+  return h ? h->value() : asyncsrv::emptyString;
 }
 
 #ifdef ESP8266
@@ -1094,12 +1249,12 @@ const String &AsyncWebServerRequest::header(const __FlashStringHelper *data) con
 
 const String &AsyncWebServerRequest::header(size_t i) const {
   const AsyncWebHeader *h = getHeader(i);
-  return h ? h->value() : emptyString;
+  return h ? h->value() : asyncsrv::emptyString;
 }
 
 const String &AsyncWebServerRequest::headerName(size_t i) const {
   const AsyncWebHeader *h = getHeader(i);
-  return h ? h->name() : emptyString;
+  return h ? h->name() : asyncsrv::emptyString;
 }
 
 String AsyncWebServerRequest::urlDecode(const String &text) const {
@@ -1110,7 +1265,7 @@ String AsyncWebServerRequest::urlDecode(const String &text) const {
   // Allocate the string internal buffer - never longer from source text
   if (!decoded.reserve(len)) {
     async_ws_log_e("Failed to allocate");
-    return emptyString;
+    return asyncsrv::emptyString;
   }
   while (i < len) {
     char decodedChar;
@@ -1127,34 +1282,6 @@ String AsyncWebServerRequest::urlDecode(const String &text) const {
     decoded.concat(decodedChar);
   }
   return decoded;
-}
-
-const char *AsyncWebServerRequest::methodToString() const {
-  if (_method == HTTP_ANY) {
-    return T_ANY;
-  }
-  if (_method & HTTP_GET) {
-    return T_GET;
-  }
-  if (_method & HTTP_POST) {
-    return T_POST;
-  }
-  if (_method & HTTP_DELETE) {
-    return T_DELETE;
-  }
-  if (_method & HTTP_PUT) {
-    return T_PUT;
-  }
-  if (_method & HTTP_PATCH) {
-    return T_PATCH;
-  }
-  if (_method & HTTP_HEAD) {
-    return T_HEAD;
-  }
-  if (_method & HTTP_OPTIONS) {
-    return T_OPTIONS;
-  }
-  return T_UNKNOWN;
 }
 
 const char *AsyncWebServerRequest::requestedConnTypeToString() const {
@@ -1178,3 +1305,95 @@ AsyncClient *AsyncWebServerRequest::clientRelease() {
   _client = nullptr;
   return c;
 }
+
+namespace asyncsrv {
+// WebRequestMethod conversions
+WebRequestMethod stringToMethod(const String &m) {
+  if (m == T_GET) {
+    return AsyncWebRequestMethod::HTTP_GET;
+  } else if (m == T_POST) {
+    return AsyncWebRequestMethod::HTTP_POST;
+  } else if (m == T_DELETE) {
+    return AsyncWebRequestMethod::HTTP_DELETE;
+  } else if (m == T_PUT) {
+    return AsyncWebRequestMethod::HTTP_PUT;
+  } else if (m == T_PATCH) {
+    return AsyncWebRequestMethod::HTTP_PATCH;
+  } else if (m == T_HEAD) {
+    return AsyncWebRequestMethod::HTTP_HEAD;
+  } else if (m == T_OPTIONS) {
+    return AsyncWebRequestMethod::HTTP_OPTIONS;
+  } else if (m == T_TRACE) {
+    return AsyncWebRequestMethod::HTTP_TRACE;
+  } else if (m == T_CONNECT) {
+    return AsyncWebRequestMethod::HTTP_CONNECT;
+  } else if (m == T_PURGE) {
+    return AsyncWebRequestMethod::HTTP_PURGE;
+  } else if (m == T_LINK) {
+    return AsyncWebRequestMethod::HTTP_LINK;
+  } else if (m == T_UNLINK) {
+    return AsyncWebRequestMethod::HTTP_UNLINK;
+  } else if (m == T_PROPFIND) {
+    return AsyncWebRequestMethod::HTTP_PROPFIND;
+  } else if (m == T_LOCK) {
+    return AsyncWebRequestMethod::HTTP_LOCK;
+  } else if (m == T_UNLOCK) {
+    return AsyncWebRequestMethod::HTTP_UNLOCK;
+  } else if (m == T_PROPPATCH) {
+    return AsyncWebRequestMethod::HTTP_PROPPATCH;
+  } else if (m == T_MKCOL) {
+    return AsyncWebRequestMethod::HTTP_MKCOL;
+  } else if (m == T_MOVE) {
+    return AsyncWebRequestMethod::HTTP_MOVE;
+  } else if (m == T_COPY) {
+    return AsyncWebRequestMethod::HTTP_COPY;
+  } else if (m == T_SEARCH) {
+    return AsyncWebRequestMethod::HTTP_SEARCH;
+  } else if (m == T_BIND) {
+    return AsyncWebRequestMethod::HTTP_BIND;
+  } else if (m == T_REBIND) {
+    return AsyncWebRequestMethod::HTTP_REBIND;
+  } else if (m == T_UNBIND) {
+    return AsyncWebRequestMethod::HTTP_UNBIND;
+  } else if (m == T_ACL) {
+    return AsyncWebRequestMethod::HTTP_ACL;
+  } else {
+    return AsyncWebRequestMethod::HTTP_INVALID;
+  }
+}
+
+const char *methodToString(WebRequestMethod method) {
+  switch (method) {
+    case AsyncWebRequestMethod::HTTP_DELETE: return T_DELETE;
+    case AsyncWebRequestMethod::HTTP_GET:    return T_GET;
+    case AsyncWebRequestMethod::HTTP_HEAD:   return T_HEAD;
+    case AsyncWebRequestMethod::HTTP_POST:   return T_POST;
+    case AsyncWebRequestMethod::HTTP_PUT:    return T_PUT;
+    /* pathological */
+    case AsyncWebRequestMethod::HTTP_CONNECT: return T_CONNECT;
+    case AsyncWebRequestMethod::HTTP_OPTIONS: return T_OPTIONS;
+    case AsyncWebRequestMethod::HTTP_TRACE:   return T_TRACE;
+    /* WebDAV */
+    case AsyncWebRequestMethod::HTTP_COPY:      return T_COPY;
+    case AsyncWebRequestMethod::HTTP_LOCK:      return T_LOCK;
+    case AsyncWebRequestMethod::HTTP_MKCOL:     return T_MKCOL;
+    case AsyncWebRequestMethod::HTTP_MOVE:      return T_MOVE;
+    case AsyncWebRequestMethod::HTTP_PROPFIND:  return T_PROPFIND;
+    case AsyncWebRequestMethod::HTTP_PROPPATCH: return T_PROPPATCH;
+    case AsyncWebRequestMethod::HTTP_SEARCH:    return T_SEARCH;
+    case AsyncWebRequestMethod::HTTP_UNLOCK:    return T_UNLOCK;
+    case AsyncWebRequestMethod::HTTP_BIND:      return T_BIND;
+    case AsyncWebRequestMethod::HTTP_REBIND:    return T_REBIND;
+    case AsyncWebRequestMethod::HTTP_UNBIND:    return T_UNBIND;
+    case AsyncWebRequestMethod::HTTP_ACL:       return T_ACL;
+    /* RFC-5789 */
+    case AsyncWebRequestMethod::HTTP_PATCH: return T_PATCH;
+    case AsyncWebRequestMethod::HTTP_PURGE: return T_PURGE;
+    /* RFC-2068, section 19.6.1.2 */
+    case AsyncWebRequestMethod::HTTP_LINK:   return T_LINK;
+    case AsyncWebRequestMethod::HTTP_UNLINK: return T_UNLINK;
+    // Unsupported
+    default: return T_UNKNOWN;
+  }
+}
+}  // namespace asyncsrv
