@@ -38,7 +38,7 @@
 #include "TFT_Setup_ESP32_S3_Thermostat.h"
 #include <HTTPClient.h>
 #include <PubSubClient.h> // Include the MQTT library
-#include <esp_task_wdt.h> // Include the watchdog timer library
+#include <esp_task_wdt.h> // Watchdog reset API used in main loop
 #include <time.h>
 #include <ArduinoJson.h> // Include the ArduinoJson library
 #include <OneWire.h>
@@ -59,14 +59,13 @@
 #include "SettingsUI.h"
 
 // Version control information
-const String sw_version = "1.5.000"; // Software version - Display cleanup + lockout/fan stability fixes
+const String sw_version = "1.5.003"; // Software version - Display cleanup + lockout/fan stability fixes
 const String build_date = __DATE__;  // Compile date
 const String build_time = __TIME__;  // Compile time
 String version_info = sw_version + " (" + build_date + " " + build_time + ")";
 
 // Constants
 const int SECONDS_PER_HOUR = 3600;
-const int WDT_TIMEOUT = 10; // Watchdog timer timeout in seconds
 
 // Temperature/Humidity Sensor Configuration
 enum SensorType {
@@ -190,6 +189,17 @@ bool backupHeatActive = false;
 unsigned long backupHeatDemandStart = 0;
 unsigned long backupHeatLastTempRiseTime = 0;
 float backupHeatLastReferenceTemp = NAN;
+
+// US/EU Mode and Humidity Control Settings
+// region: "US" or "EU"
+String thermostatRegion = "US";
+// EU-specific humidity dehumidification settings
+// relay: 0=COOL relay 1 (default), 1=COOL relay 2 (stage 2 cool), 2=PUMP relay
+bool euHumidityControlEnabled = false;
+int euHumidityRelaySelection = 0;
+float euHumiditySetpoint = 60.0f;  // Target humidity % (activate dehumidification above this)
+float euHumidityDeadband = 5.0f;   // Hysteresis deadband for humidity control
+bool euHumidityDemandActive = false;
 
 // Globals
 AsyncWebServer server(80);
@@ -339,6 +349,10 @@ bool thermostatModeChanged = false;
 bool fanModeChanged = false;
 bool handlingMQTTMessage = false; // Add this flag
 
+// Mode switch debounce/delay (prevent rapid mode switching)
+const unsigned long MODE_SWITCH_DELAY_MS = 3000; // 3 second delay between mode switches (except to OFF)
+unsigned long lastModeSwitchTime = 0; // Track when the last mode switch occurred
+
 // Force a full display redraw (clears cached values)
 bool forceFullDisplayRefresh = false;
 
@@ -408,6 +422,7 @@ void activateHeating();
 void activateCooling();
 void handleFanControl();
 void enforceBackupHeatRelayConflicts();
+void enforceEUHumidityRelayConflicts();
 int getBackupHeatRelayPin();
 void setBackupHeatRelay(bool enabled);
 void clearBackupHeatState(const char* reason);
@@ -2696,25 +2711,38 @@ void handleButtonPress(uint16_t x, uint16_t y)
     else if (x > 125 && x < 195 && y > 195 && y < 245) // Mode button with slightly increased touch area
     {
         String oldMode = thermostatMode;
-        // Change thermostat mode
-        if (thermostatMode == "auto")
-            thermostatMode = "heat";
-        else if (thermostatMode == "heat")
-            thermostatMode = "cool";
-        else if (thermostatMode == "cool")
-            thermostatMode = "off";
-        else
-            thermostatMode = "auto";
+        String newMode = "auto"; // Default next mode
         
-        debugLog("[DEBUG] Mode switched: %s -> %s\n", oldMode.c_str(), thermostatMode.c_str());
-
-        saveSettings();
-        sendMQTTData();
-        // Immediately update relays to reflect mode change
-        controlRelays(currentTemp);
-        // Update display after relays for accurate indicators
-        updateDisplay(currentTemp, currentHumidity);
-        setDisplayUpdateFlag(); // Option C: Request display update
+        // Determine next mode
+        if (thermostatMode == "auto")
+            newMode = "heat";
+        else if (thermostatMode == "heat")
+            newMode = "cool";
+        else if (thermostatMode == "cool")
+            newMode = "off";
+        else
+            newMode = "auto";
+        
+        // Check mode switch delay: allow immediate switch to OFF, delay others
+        unsigned long currentTime = millis();
+        bool isSwitchingToOff = (newMode == "off");
+        bool delayElapsed = (currentTime - lastModeSwitchTime >= MODE_SWITCH_DELAY_MS);
+        
+        if (isSwitchingToOff || delayElapsed) {
+            thermostatMode = newMode;
+            lastModeSwitchTime = currentTime;
+            debugLog("[DEBUG] Mode switched: %s -> %s (delay_ok=%d)\n", oldMode.c_str(), thermostatMode.c_str(), (isSwitchingToOff || delayElapsed));
+            
+            saveSettings();
+            sendMQTTData();
+            // Immediately update relays to reflect mode change
+            controlRelays(currentTemp);
+            // Update display after relays for accurate indicators
+            updateDisplay(currentTemp, currentHumidity);
+            setDisplayUpdateFlag(); // Option C: Request display update
+        } else {
+            debugLog("[DEBUG] Mode switch blocked: %s (too soon, need to wait %lu ms)\n", newMode.c_str(), MODE_SWITCH_DELAY_MS - (currentTime - lastModeSwitchTime));
+        }
     }
     else if (x > 195 && x < 265 && y > 195 && y < 245) // Fan button with slightly increased touch area
     {
@@ -3818,6 +3846,18 @@ void enforceBackupHeatRelayConflicts()
     }
 }
 
+void enforceEUHumidityRelayConflicts()
+{
+    if (!euHumidityControlEnabled) {
+        return;
+    }
+
+    if (euHumidityRelaySelection == 1 && stage2CoolingEnabled) {
+        stage2CoolingEnabled = false;
+        debugLog("[EU HUMIDITY] Disabled stage2 cooling (C2 relay reserved)\n");
+    }
+}
+
 int getBackupHeatRelayPin()
 {
     if (backupHeatRelaySelection == 1) {
@@ -3901,6 +3941,8 @@ void controlRelays(float currentTemp)
     }
 
     enforceBackupHeatRelayConflicts();
+    enforceEUHumidityRelayConflicts();
+    euHumidityDemandActive = false;
     
     // Check if shower mode is active and has expired
     if (showerModeActive) {
@@ -4068,17 +4110,38 @@ void controlRelays(float currentTemp)
         debugLog("[DEBUG] Cool check: %.1f > %.1f? %s\n", 
                      currentTemp, (setTempCool + tempSwing), 
                      (currentTemp > (setTempCool + tempSwing)) ? "YES" : "NO");
-        if (currentTemp > (setTempCool + tempSwing))
-        {
+        
+        bool shouldCool = false;
+        bool humidityDrivenCooling = false;
+        
+        // Temperature-based cooling (primary)
+        if (currentTemp > (setTempCool + tempSwing)) {
+            shouldCool = true;
+            debugLog("[DEBUG] Temperature trigger: %.1f > %.1f\n", currentTemp, (setTempCool + tempSwing));
+        }
+        
+        // EU Humidity-based dehumidification (secondary, only in EU mode)
+        if (thermostatRegion == "EU" && euHumidityControlEnabled) {
+            if (currentHumidity > euHumiditySetpoint) {
+                shouldCool = true;
+                humidityDrivenCooling = true;
+                debugLog("[DEBUG] EU Humidity dehumidification trigger: %.1f%% > %.1f%%\n", 
+                         currentHumidity, euHumiditySetpoint);
+            }
+        }
+        euHumidityDemandActive = humidityDrivenCooling;
+        
+        if (shouldCool) {
             // Only call activateCooling if not already cooling
             if (!coolingOn) {
-                debugLog("[HVAC] COOL ACTIVATED: %.1f > %.1f (setpoint+swing)\n", 
-                         currentTemp, (setTempCool + tempSwing));
+                debugLog("[HVAC] COOL ACTIVATED: temperature or humidity override\n");
                 activateCooling();
             }
         }
-        // Only turn off if below setpoint (hysteresis)
-        else if (currentTemp < setTempCool)
+        // Only turn off if below setpoint (hysteresis) AND not in EU humidity dehumidification
+        else if ((currentTemp < setTempCool) && 
+                 !(thermostatRegion == "EU" && euHumidityControlEnabled && 
+                   currentHumidity > (euHumiditySetpoint - euHumidityDeadband)))
         {
             if (heatingOn || coolingOn || fanOn) {
                 debugLog("[HVAC] COOL DEACTIVATED: %.1f < %.1f (setpoint)\n", 
@@ -4097,6 +4160,7 @@ void controlRelays(float currentTemp)
         
         if (currentTemp < (setTempAuto - autoTempSwing))
         {
+            euHumidityDemandActive = false;
             debugLog("[DEBUG] Auto heating check: %.1f < %.1f? YES\n", 
                          currentTemp, (setTempAuto - autoTempSwing));
             if (!heatingOn) {
@@ -4107,6 +4171,7 @@ void controlRelays(float currentTemp)
         }
         else if (currentTemp > (setTempAuto + autoTempSwing))
         {
+            euHumidityDemandActive = false;
             debugLog("[DEBUG] Auto cooling check: %.1f > %.1f? YES\n", 
                          currentTemp, (setTempAuto + autoTempSwing));
             if (!coolingOn) {
@@ -4115,17 +4180,38 @@ void controlRelays(float currentTemp)
             }
             activateCooling();
         }
+        // EU Humidity-based dehumidification (supplementary in auto mode)
+        else if (thermostatRegion == "EU" && euHumidityControlEnabled && currentHumidity > euHumiditySetpoint)
+        {
+            euHumidityDemandActive = true;
+            if (!coolingOn) {
+                debugLog("[DEBUG] Auto mode EU humidity dehumidification: %.1f%% > %.1f%%\n", 
+                         currentHumidity, euHumiditySetpoint);
+            }
+            activateCooling();
+        }
         else
         {
-            debugLog("[DEBUG] Auto deadband check: %.1f between %.1f and %.1f\n", 
-                         currentTemp, (setTempAuto - autoTempSwing), (setTempAuto + autoTempSwing));
-            if (heatingOn || coolingOn) {
-                debugLog("Auto mode temperature in deadband, turning off: %.1f is between %.1f and %.1f\n", 
+            euHumidityDemandActive = false;
+            // Deactivate cooling if:
+            // 1. Temperature is back in deadband AND
+            // 2. Either not in EU mode OR humidity is back below setpoint with deadband
+            bool tempInDeadband = currentTemp >= (setTempAuto - autoTempSwing) && 
+                                  currentTemp <= (setTempAuto + autoTempSwing);
+            bool humidityOK = !(thermostatRegion == "EU" && euHumidityControlEnabled && 
+                                currentHumidity > (euHumiditySetpoint - euHumidityDeadband));
+            
+            if (tempInDeadband && humidityOK) {
+                debugLog("[DEBUG] Auto deadband check: %.1f between %.1f and %.1f\n", 
                              currentTemp, (setTempAuto - autoTempSwing), (setTempAuto + autoTempSwing));
+                if (heatingOn || coolingOn) {
+                    debugLog("Auto mode temperature in deadband, turning off: %.1f is between %.1f and %.1f\n", 
+                                 currentTemp, (setTempAuto - autoTempSwing), (setTempAuto + autoTempSwing));
+                }
+                // Called unconditionally even if already off — re-asserts relay pin states
+                // every cycle as a safety net to prevent relays from getting stuck ON
+                turnOffAllRelays();
             }
-            // Called unconditionally even if already off — re-asserts relay pin states
-            // every cycle as a safety net to prevent relays from getting stuck ON
-            turnOffAllRelays();
         }
     }
 
@@ -4371,6 +4457,15 @@ void activateHeating() {
 void activateCooling()
 {
     debugLog("[DEBUG] activateCooling() ENTRY: stage1Active=%d, stage2Active=%d\n", stage1Active, stage2Active);
+    bool euHumidityRelayMode = (thermostatRegion == "EU" && euHumidityControlEnabled && euHumidityDemandActive);
+    int coolingRelayPin = COOL_RELAY_1_PIN;
+    if (euHumidityRelayMode) {
+        if (euHumidityRelaySelection == 1) {
+            coolingRelayPin = COOL_RELAY_2_PIN;
+        } else if (euHumidityRelaySelection == 2) {
+            coolingRelayPin = PUMP_RELAY_PIN;
+        }
+    }
     
     // Default cooling behavior with hybrid staging
     coolingOn = true;
@@ -4390,12 +4485,17 @@ void activateCooling()
     
     // Check if stage 1 is not active yet
     if (!stage1Active) {
-        debugLog("[DEBUG] Activating cooling stage 1 relay\n");
-        digitalWrite(COOL_RELAY_1_PIN, HIGH); // Activate stage 1
+        debugLog("[DEBUG] Activating cooling relay pin %d\n", coolingRelayPin);
+        if (euHumidityRelayMode) {
+            digitalWrite(COOL_RELAY_1_PIN, LOW);
+            digitalWrite(COOL_RELAY_2_PIN, LOW);
+            digitalWrite(PUMP_RELAY_PIN, LOW);
+        }
+        digitalWrite(coolingRelayPin, HIGH);
         stage1Active = true;
         stage1StartTime = millis(); // Record the start time
         stage2Active = false; // Ensure stage 2 is off initially
-        debugLog("[DEBUG] Stage 1 cooling activated - relay pin %d set HIGH\n", COOL_RELAY_1_PIN);
+        debugLog("[DEBUG] Cooling activated - relay pin %d set HIGH\n", coolingRelayPin);
         
         // Wake display when HVAC activates
         if (displayIsAsleep) {
@@ -4406,8 +4506,8 @@ void activateCooling()
         debugLog("[DEBUG] Cooling stage 1 already active (stage1Active=%d)\n", stage1Active);
     }
     
-    // Only activate stage 2 cooling if NOT using reversing valve
-    if (!reversingValveEnabled && !stage2Active && 
+    // Only activate stage 2 cooling if NOT using reversing valve and not in EU humidity relay mode
+    if (!euHumidityRelayMode && !reversingValveEnabled && !stage2Active && 
             ((millis() - stage1StartTime) / 1000 >= stage1MinRuntime) && // Minimum run time before stage 2 allowed
             (currentTemp > setTempCool + stage2TempDelta) && // Simplified: just use delta, no swing addition
             stage2CoolingEnabled) { // Check if stage 2 cooling is enabled
@@ -4593,6 +4693,10 @@ void handleWebRequests()
                                        reversingValveEnabled,
                                        backupHeatEnabled, backupHeatRelaySelection, backupHeatDelayMinutes,
                                        backupHeatMinTempRise, backupHeatMaxTempDrop,
+                                       thermostatRegion,
+                                       euHumidityControlEnabled, euHumidityRelaySelection,
+                                       euHumiditySetpoint, euHumidityDeadband,
+                                       euHumidityDemandActive,
                                        hydronicTempLow, hydronicTempHigh,
                                        wifiSSID, wifiPassword, timeZone,
                                        use24HourClock, mqttEnabled, mqttServer,
@@ -4604,23 +4708,21 @@ void handleWebRequests()
                                        weatherSource, owmApiKey, owmCity, owmState, owmCountry,
                                        haUrl, haToken, haEntityId, weatherUpdateInterval,
                                        weather.getData());
-        request->send(200, "text/html", html);
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/html", html);
+        response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        response->addHeader("Pragma", "no-cache");
+        response->addHeader("Expires", "0");
+        request->send(response);
     });
 
     server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request)
     {
-        String html = generateSettingsPage(thermostatMode, fanMode, setTempHeat, setTempCool, setTempAuto, 
-                                          tempSwing, autoTempSwing, fanRelayNeeded, useFahrenheit, mqttEnabled, 
-                                          stage1MinRuntime, stage2TempDelta, stage2HeatingEnabled, stage2CoolingEnabled,
-                                          reversingValveEnabled,
-                                          backupHeatEnabled, backupHeatRelaySelection, backupHeatDelayMinutes,
-                                          backupHeatMinTempRise, backupHeatMaxTempDrop,
-                                          hydronicHeatingEnabled, hydronicTempLow, hydronicTempHigh, fanMinutesPerHour,
-                                          showerModeEnabled, showerModeDuration,
-                                          mqttServer, mqttPort, mqttUsername, mqttPassword, wifiSSID, wifiPassword,
-                                          hostname, use24HourClock, timeZone, tempOffset, humidityOffset, displaySleepEnabled,
-                                          displaySleepTimeout);
-        request->send(200, "text/html", html);
+        AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "Redirecting to embedded settings page...");
+        response->addHeader("Location", "/?tab=settings");
+        response->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        response->addHeader("Pragma", "no-cache");
+        response->addHeader("Expires", "0");
+        request->send(response);
     });
 
     server.on("/confirm_restore", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -4792,6 +4894,35 @@ void handleWebRequests()
             backupHeatMaxTempDrop = constrain(backupHeatMaxTempDrop, 0.1f, 10.0f);
         }
         enforceBackupHeatRelayConflicts();
+        
+        // US/EU Mode settings
+        if (request->hasParam("thermostatRegion", true)) {
+            String region = request->getParam("thermostatRegion", true)->value();
+            if (region == "EU" || region == "US") {
+                thermostatRegion = region;
+            }
+        }
+        
+        // EU Humidity Control settings
+        if (request->hasParam("euHumidityControlEnabled", true)) {
+            euHumidityControlEnabled = request->getParam("euHumidityControlEnabled", true)->value() == "on";
+        } else {
+            euHumidityControlEnabled = false;
+        }
+        if (request->hasParam("euHumidityRelay", true)) {
+            euHumidityRelaySelection = request->getParam("euHumidityRelay", true)->value().toInt();
+            euHumidityRelaySelection = constrain(euHumidityRelaySelection, 0, 2);
+        }
+        if (request->hasParam("euHumiditySetpoint", true)) {
+            euHumiditySetpoint = request->getParam("euHumiditySetpoint", true)->value().toFloat();
+            euHumiditySetpoint = constrain(euHumiditySetpoint, 30.0f, 90.0f);
+        }
+        if (request->hasParam("euHumidityDeadband", true)) {
+            euHumidityDeadband = request->getParam("euHumidityDeadband", true)->value().toFloat();
+            euHumidityDeadband = constrain(euHumidityDeadband, 1.0f, 20.0f);
+        }
+        enforceEUHumidityRelayConflicts();
+        
         if (request->hasParam("tempOffset", true)) {
             tempOffset = request->getParam("tempOffset", true)->value().toFloat();
             // Constrain to reasonable range (-10°C to +10°C)
@@ -4955,7 +5086,11 @@ void handleWebRequests()
         response += "\"tempSwing\": \"" + String(tempSwing) + "\",";
         response += "\"thermostatMode\": \"" + thermostatMode + "\",";
         response += "\"fanMode\": \"" + fanMode + "\"}";
-        request->send(200, "application/json", response); });
+        AsyncWebServerResponse *jsonResponse = request->beginResponse(200, "application/json", response);
+        jsonResponse->addHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        jsonResponse->addHeader("Pragma", "no-cache");
+        jsonResponse->addHeader("Expires", "0");
+        request->send(jsonResponse); });
 
     server.on("/version", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -5576,6 +5711,11 @@ void updateDisplay(float currentTemp, float currentHumidity)
         }
     }
     float currentSetTemp = (thermostatMode == "heat") ? setTempHeat : (thermostatMode == "cool") ? setTempCool : setTempAuto;
+    bool showOffModeSidebarTemps = (thermostatMode == "off");
+    static float previousSidebarCurrentTemp = NAN;
+    if (fullRefreshTriggered) {
+            previousSidebarCurrentTemp = NAN; // Reset previous sidebar current temperature
+    }
 
     if (currentSetTemp != previousSidebarSetTemp || currentHumidity != previousHumidity || fullRefreshTriggered)
     {
@@ -5583,21 +5723,26 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // Background color in setTextColor will clear as it writes
         tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
         tft.setTextSize(2); // Increase right-side readout visibility
-        
-        // Setpoint at y=30 with wider clear area for larger text
-        tft.fillRect(rightLabelX, sy(30), sx(112), sy(16), COLOR_BACKGROUND); // clear full row before redraw
-        tft.setCursor(rightLabelX, sy(30));
-        tft.print("Set:");
-        char setpointStr[6];
-        dtostrf(currentSetTemp, 4, 1, setpointStr); // Convert setpoint to string with 1 decimal place
-        tft.print(setpointStr);
-        tft.print(useFahrenheit ? "F" : "C");
 
-        // Humidity (even spacing from top temperature row)
+        if (!showOffModeSidebarTemps) {
+            // Normal mode (heat/cool/auto): show setpoint at top
+            tft.fillRect(rightLabelX, sy(30), sx(112), sy(16), COLOR_BACKGROUND);
+            tft.setCursor(rightLabelX, sy(30));
+            tft.print("Set:");
+            char setpointStr[6];
+            dtostrf(currentSetTemp, 4, 1, setpointStr);
+            tft.print(setpointStr);
+            tft.print(useFahrenheit ? "F" : "C");
+        } else {
+            // OFF mode: clear setpoint line
+            tft.fillRect(rightLabelX, sy(30), sx(112), sy(16), COLOR_BACKGROUND);
+        }
+        
+        // Always display humidity below setpoint area
         tft.fillRect(rightValueX, sy(54), rightColW, sy(16), COLOR_BACKGROUND);
         tft.setCursor(rightValueX, sy(54));
         char humidityStr[6];
-        dtostrf(currentHumidity, 4, 1, humidityStr); // Convert humidity to string with 1 decimal place
+        dtostrf(currentHumidity, 4, 1, humidityStr);
         tft.print(humidityStr);
         tft.print("%");
         
@@ -5630,6 +5775,27 @@ void updateDisplay(float currentTemp, float currentHumidity)
         // Update previous values
         previousSidebarSetTemp = currentSetTemp;
         previousHumidity = currentHumidity;
+        previousSidebarCurrentTemp = currentTemp;
+    }
+
+    // EU dehumidification status indicator (right sidebar)
+    static int prevEUDehumIndicatorState = -2; // -2 uninitialized, -1 hidden, 0 standby, 1 active
+    if (fullRefreshTriggered) {
+        prevEUDehumIndicatorState = -2;
+    }
+    int euDehumIndicatorState = -1;
+    if (thermostatRegion == "EU" && euHumidityControlEnabled) {
+        euDehumIndicatorState = euHumidityDemandActive ? 1 : 0;
+    }
+    if (euDehumIndicatorState != prevEUDehumIndicatorState) {
+        tft.fillRect(rightValueX, sy(150), rightColW, sy(16), COLOR_BACKGROUND);
+        if (euDehumIndicatorState >= 0) {
+            tft.setTextSize(2);
+            tft.setTextColor(euDehumIndicatorState == 1 ? COLOR_SUCCESS : COLOR_TEXT, COLOR_BACKGROUND);
+            tft.setCursor(rightValueX, sy(150));
+            tft.print(euDehumIndicatorState == 1 ? "DEHUM ON" : "DEHUM OFF");
+        }
+        prevEUDehumIndicatorState = euDehumIndicatorState;
     }
 
     // Display hydronic temperatures if enabled and sensor(s) are present
@@ -5773,8 +5939,21 @@ void updateDisplay(float currentTemp, float currentHumidity)
     }
     else
     {
-        // Clear the set temperature area if mode is "off" (limit width to not overlap sensor readings at x=230)
-        tft.fillRect(sx(40), sy(100), sx(165), sy(40), COLOR_BACKGROUND);
+        // In OFF mode, show current temp large in center, do not show setpoint
+        if ((currentTemp != previousMainDisplayTemp || fullRefreshTriggered) && !showerModeActive) {
+            tft.fillRect(sx(40), sy(95), sx(165), sy(60), COLOR_BACKGROUND);
+            tft.setTextColor(COLOR_TEXT, COLOR_BACKGROUND);
+            tft.setTextSize((dispW() > 320) ? 5 : 4);
+            tft.setCursor(sx(40), sy(100));
+            char tempStr[6];
+            dtostrf(currentTemp, 4, 1, tempStr);
+            tft.print(tempStr);
+            tft.println(useFahrenheit ? " F" : " C");
+            previousMainDisplayTemp = currentTemp;
+            previousMainShowSetTemp = false;
+        } else if (showerModeActive) {
+            tft.fillRect(sx(40), sy(95), sx(165), sy(50), COLOR_BACKGROUND);
+        }
     }
 
     // Add status indicators for heating, cooling, and fan
@@ -5897,6 +6076,13 @@ void saveSettings()
     preferences.putULong("dispTimeout", displaySleepTimeout);
     preferences.putInt("brightness", currentBrightness);
     preferences.putBool("ldrDimEn", ldrDimmingEnabled);
+    
+    // Save US/EU and humidity control settings
+    preferences.putString("thermoRgn", thermostatRegion);
+    preferences.putBool("euHumCtrlEn", euHumidityControlEnabled);
+    preferences.putInt("euHumRl", euHumidityRelaySelection);
+    preferences.putFloat("euHumSet", euHumiditySetpoint);
+    preferences.putFloat("euHumDb", euHumidityDeadband);
     
     // Save weather settings
     preferences.putInt("weatherSrc", weatherSource);
@@ -6053,6 +6239,14 @@ void loadSettings()
     backupHeatMinTempRise = constrain(getOrInitFloat("bkHeatRise", 0.5f), 0.1f, 5.0f);
     backupHeatMaxTempDrop = constrain(getOrInitFloat("bkHeatDrop", 1.5f), 0.1f, 10.0f);
     enforceBackupHeatRelayConflicts();
+    
+    // Load US/EU and humidity control settings
+    thermostatRegion = getOrInitString("thermoRgn", "US");
+    euHumidityControlEnabled = getOrInitBool("euHumCtrlEn", false);
+    euHumidityRelaySelection = constrain(getOrInitInt("euHumRl", 0), 0, 2);
+    euHumiditySetpoint = constrain(getOrInitFloat("euHumSet", 60.0f), 30.0f, 90.0f);
+    euHumidityDeadband = constrain(getOrInitFloat("euHumDb", 5.0f), 1.0f, 20.0f);
+    enforceEUHumidityRelayConflicts();
     tempOffset = getOrInitFloat("tempOffset", -4.0);
     humidityOffset = getOrInitFloat("humOffset", 0.0);
     displaySleepEnabled = getOrInitBool("dispSleepEn", false);
@@ -6341,6 +6535,12 @@ void restoreDefaultSettings()
     backupHeatDelayMinutes = 30;
     backupHeatMinTempRise = 0.5f;
     backupHeatMaxTempDrop = 1.5f;
+    thermostatRegion = "US";
+    euHumidityControlEnabled = false;
+    euHumidityRelaySelection = 0;
+    euHumiditySetpoint = 60.0f;
+    euHumidityDeadband = 5.0f;
+    euHumidityDemandActive = false;
     tempOffset = -4.0; // Reset temperature calibration offset to default
     humidityOffset = 0.0; // Reset humidity calibration offset to default
     displaySleepEnabled = false; // Reset display sleep enabled to default
