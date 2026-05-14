@@ -43,6 +43,7 @@ else
   echo "Created tag v$VERSION."
 fi
 
-echo "To push:"
-echo "  git push origin main"
-echo "  git push origin v$VERSION"
+echo "Pushing commit and tag to origin..."
+git push origin main
+git push origin "v$VERSION"
+echo "Release push complete for v$VERSION."
