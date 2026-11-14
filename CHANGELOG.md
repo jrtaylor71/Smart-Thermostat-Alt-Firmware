@@ -12,6 +12,10 @@ All notable firmware changes are documented in this file.
 - When in doubt, use the smallest possible version bump and default to incrementing the last three digits.
 - Do not change `sw_version`, changelog version headers, or release labels unless the user has approved that specific version change.
 
+## [1.5.009] - 2026-11-14
+- Removed competing display-driver backlight PWM attachments so the application's existing PWM control retains ownership across all supported panel types.
+- Corrected the backlight ownership conflict that could leave the screen lit with stale values during display sleep, while preserving light-sensor dimming and brightness settings.
+
 ## [1.5.008] - 2026-07-23
 - Split fan relay requirement into separate settings for heating and cooling.
 - Updated web settings and TFT settings UI to expose independent fan relay toggles for heat and cool.

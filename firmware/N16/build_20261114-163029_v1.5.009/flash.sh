@@ -6,9 +6,9 @@
 PORT=/dev/ttyACM0
 SCRIPT_DIR="/home/jonnt/Documents/Smart-Thermostat-Alt-Firmware"
 
-BOOTLOADER_FILE="bootloader_v1.5.007_20260723-192618.bin"
-PARTITIONS_FILE="partitions_v1.5.007_20260723-192618.bin"
-FIRMWARE_FILE="firmware_v1.5.007_20260723-192618.bin"
+BOOTLOADER_FILE="bootloader_v1.5.009_20261114-163029.bin"
+PARTITIONS_FILE="partitions_v1.5.009_20261114-163029.bin"
+FIRMWARE_FILE="firmware_v1.5.009_20261114-163029.bin"
 
 echo "[FLASH] Using port: "
 echo "[FLASH] Flashing ESP32-S3 from ELF file..."
